@@ -60,6 +60,14 @@ Open <http://127.0.0.1:8000/> and select the submission.
 Expect ingestion and indexing to take minutes. Visual indexing runs a VLM over
 a frame every 2 seconds, so cost scales with video length — start short.
 
+## Public prepared-review showcase
+
+`public/` is a deliberately separate, static Vercel showcase. It uses clearly
+labelled representative PulseBar review scenarios and has no upload, provider,
+database, credential, or shared-state path. It is not a substitute for the
+operator workflow above: real processing still requires the local API and the
+separate worker so provider calls remain outside request handling.
+
 ## Tests
 
 ```bash
