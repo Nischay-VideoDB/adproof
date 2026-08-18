@@ -96,7 +96,7 @@ figure img { border-radius:12px; }
         <i class="ph ph-moon inline dark:hidden text-[18px]" aria-hidden="true"></i>
       </button>
       <a href="/examples" class="text-[14px] t2 px-3 py-2 hover:text-[color:var(--text)] transition-colors">Prepared examples</a>
-      <a href="/app?demo=1" class="btn btn-primary text-[14px] font-medium px-4 py-2">Try live</a>
+      <a href="/app?demo=1" class="btn btn-primary text-[14px] font-medium px-4 py-2">Open showcase</a>
     </div>
   </nav>
 </header>
@@ -114,7 +114,7 @@ figure img { border-radius:12px; }
       Every requirement checked against the video, with the exact timestamp behind each result.
     </p>
     <div class="mt-9 flex flex-wrap gap-3">
-      <a href="/app?demo=1" class="btn btn-primary font-medium px-6 py-3">Try the live workflow</a>
+      <a href="/app?demo=1" class="btn btn-primary font-medium px-6 py-3">Open the live showcase</a>
       <a href="#how" class="btn btn-ghost font-medium px-6 py-3">How it works</a>
     </div>
   </div>
@@ -265,11 +265,14 @@ figure img { border-radius:12px; }
     <div class="reveal rounded p-8" style="border-left:3px solid var(--accent); background:var(--surface); border-top:1px solid var(--line); border-right:1px solid var(--line); border-bottom:1px solid var(--line)">
       <h2 class="text-xl font-semibold mb-3">Where the product is today</h2>
       <p class="t2 text-[15px] leading-relaxed">
-        AdProof verifies two kinds of requirement automatically right now:
-        <strong style="color:var(--text)">a required spoken phrase</strong> and
-        <strong style="color:var(--text)">a minimum visual duration</strong>.
-        Disclosures, competitor appearances, prohibited claims, sequencing and evidence reels are designed but not built.
-        Subjective requirements such as "feels premium" are routed to human review and never machine scored, by design rather than by omission.
+        AdProof implements nine structured requirement types across speech,
+        visual duration, on-screen events, disclosures, sequencing, prohibited
+        claims and human-only judgement. Required spoken phrase and minimum
+        visual duration have the deepest real-media field validation; the
+        remaining automated types are implemented and tested but labelled as
+        not yet field-validated. Evidence reels and exports are not built.
+        Subjective requirements such as "feels premium" always route to a
+        person and are never machine scored.
       </p>
       <p class="t2 text-[15px] leading-relaxed mt-3">
         We would rather tell you here than in month two.
@@ -329,7 +332,7 @@ figure img { border-radius:12px; }
     <p class="mt-5 t2 text-lg leading-relaxed">Bring one campaign and a few submissions. We will show you the evidence behind every result.</p>
     <div class="mt-9 flex flex-wrap gap-3 justify-center">
       <a href="mailto:hello@adproof.example?subject=AdProof%20demo" class="btn btn-primary font-medium px-7 py-3.5">Book a demo</a>
-      <a href="/app?demo=1" class="btn btn-ghost font-medium px-7 py-3.5">Try live</a>
+      <a href="/app?demo=1" class="btn btn-ghost font-medium px-7 py-3.5">Open showcase</a>
     </div>
   </div>
 </section>

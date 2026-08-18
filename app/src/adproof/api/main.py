@@ -96,11 +96,11 @@ _DUMMY_HASH = hash_password("not-a-real-password-placeholder")
 
 app = FastAPI(
     title="AdProof",
-    version="0.1.0-phase1-slice",
+    version="1.0.0-showcase",
     description=(
-        "Phase 1 vertical slice. Real VideoDB ingestion, indexing, retrieval, "
-        "deterministic evaluation, and timestamped review. No authentication, "
-        "no review actions, no fixture data."
+        "Provider-backed VideoDB ingestion, indexing, retrieval, deterministic "
+        "evaluation, timestamped evidence, authenticated review, and an "
+        "additive read-only showcase. No fixture fallback."
     ),
 )
 
@@ -204,6 +204,7 @@ def me(
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     workspaces = []
+    showcase_workspace_id = os.getenv("ADPROOF_SHOWCASE_WORKSPACE_ID")
     for workspace_id, role in principal.roles.items():
         workspace = session.get(Workspace, workspace_id)
         workspaces.append(
@@ -211,8 +212,13 @@ def me(
                 "id": workspace_id,
                 "name": workspace.name if workspace else None,
                 "role": role,
+                "is_showcase": workspace_id == showcase_workspace_id,
+                "read_only": role not in CAN_SUBMIT,
+                "can_manage_campaigns": role in CAN_MANAGE_CAMPAIGNS,
+                "can_submit": role in CAN_SUBMIT,
             }
         )
+    workspaces.sort(key=lambda item: (not item["is_showcase"], item["name"] or ""))
     return {
         "user": {
             "id": principal.user.id,
@@ -241,6 +247,14 @@ def integrity() -> dict[str, Any]:
         "fixture_data_present": False,
         "fixture_fallback_on_failure": False,
         "provider_configured": bool(settings.videodb_api_key),
+        "input_capabilities": {
+            "public_url": True,
+            "direct_file_upload": os.getenv("ADPROOF_ENV") != "production",
+            "production_guidance": (
+                "Use a durable, publicly fetchable video URL. Direct browser "
+                "uploads are disabled on the serverless showcase."
+            ),
+        },
         "versions": {
             "retrieval_plan": RETRIEVAL_PLAN_VERSION,
             "evaluator": EVALUATOR_VERSION,
@@ -417,20 +431,8 @@ def create_campaign(
     """
     from ..models import BriefVersion
 
-    if principal.user.email.endswith("@adproof.invalid"):
-        campaign_count = session.scalar(
-            select(func.count(Campaign.id)).where(
-                Campaign.workspace_id.in_(principal.workspace_ids)
-            )
-        ) or 0
-        if campaign_count >= 5:
-            raise HTTPException(
-                429, "Public test workspaces are limited to five campaigns."
-            )
-
-    # The workspace comes from the caller's memberships, never from the request
-    # body: accepting a caller-supplied workspace would let anyone write into
-    # any tenant.
+    # A caller with several memberships may select a workspace, but the choice
+    # is always checked against that caller's role before anything is written.
     workspace_id = payload.workspace_id or (
         principal.workspace_ids[0] if len(principal.workspace_ids) == 1 else None
     )
@@ -441,6 +443,19 @@ def create_campaign(
         )
     authorize_workspace(principal, workspace_id, CAN_MANAGE_CAMPAIGNS)
     workspace = session.get(Workspace, workspace_id)
+
+    if principal.user.email.endswith("@adproof.invalid"):
+        # Count only the caller's writable sandbox. The additive read-only
+        # showcase must not consume their five-campaign live-test allowance.
+        campaign_count = session.scalar(
+            select(func.count(Campaign.id)).where(
+                Campaign.workspace_id == workspace_id
+            )
+        ) or 0
+        if campaign_count >= 5:
+            raise HTTPException(
+                429, "Public test workspaces are limited to five campaigns."
+            )
 
     campaign = Campaign(workspace_id=workspace.id, name=payload.campaign_name, auto_decide=payload.auto_decide)
     session.add(campaign)
@@ -533,10 +548,13 @@ def list_campaigns(
     session: Session = Depends(get_session),
 ) -> list[dict[str, Any]]:
     out = []
+    showcase_workspace_id = os.getenv("ADPROOF_SHOWCASE_WORKSPACE_ID")
     scoped = select(Campaign).where(
         Campaign.workspace_id.in_(principal.workspace_ids)
     ).order_by(Campaign.created_at)
     for campaign in session.scalars(scoped):
+        workspace = session.get(Workspace, campaign.workspace_id)
+        role = principal.role_in(campaign.workspace_id)
         rule_set = session.scalar(
             select(RuleSetVersion)
             .where(RuleSetVersion.campaign_id == campaign.id)
@@ -548,10 +566,16 @@ def list_campaigns(
                 "id": campaign.id,
                 "name": campaign.name,
                 "workspace_id": campaign.workspace_id,
+                "workspace_name": workspace.name if workspace else None,
+                "role": role,
+                "is_showcase": campaign.workspace_id == showcase_workspace_id,
+                "can_manage": role in CAN_MANAGE_CAMPAIGNS,
+                "can_submit": role in CAN_SUBMIT,
                 "rule_set_version_id": rule_set.id if rule_set else None,
                 "rule_set_version": rule_set.version if rule_set else None,
             }
         )
+    out.sort(key=lambda item: (not item["is_showcase"], item["name"]))
     return out
 
 
@@ -703,7 +727,14 @@ def create_submission(
         source_url=payload.source_url,
         source_file_path=payload.source_file_path,
     )
-    if not created["idempotent_replay"]:
+    # Vercel has no separate worker process, so production drains the bounded
+    # durable chain inside its long-running function. Local/development keeps
+    # the documented two-process model and leaves the new job queued for the
+    # worker; this also makes API creation itself fast and testable offline.
+    if (
+        not created["idempotent_replay"]
+        and os.getenv("ADPROOF_ENV") == "production"
+    ):
         created["jobs_processed"] = run_version_until_idle(
             created["submission_version_id"]
         )
@@ -782,6 +813,7 @@ def list_submissions(
     session: Session = Depends(get_session),
 ) -> list[dict[str, Any]]:
     out = []
+    showcase_workspace_id = os.getenv("ADPROOF_SHOWCASE_WORKSPACE_ID")
     scoped = (
         select(Submission)
         .where(Submission.workspace_id.in_(principal.workspace_ids))
@@ -789,15 +821,25 @@ def list_submissions(
     )
     for submission in session.scalars(scoped):
         campaign = session.get(Campaign, submission.campaign_id)
+        workspace = session.get(Workspace, submission.workspace_id)
+        role = principal.role_in(submission.workspace_id)
         out.append(
             {
                 "id": submission.id,
                 "creator_reference": submission.creator_reference,
                 "state": submission.state,
                 "campaign_name": campaign.name if campaign else None,
+                "workspace_id": submission.workspace_id,
+                "workspace_name": workspace.name if workspace else None,
+                "role": role,
+                "is_showcase": submission.workspace_id == showcase_workspace_id,
+                "read_only": role not in CAN_SUBMIT,
                 "created_at": submission.created_at.isoformat(),
             }
         )
+    # The query already supplies newest-first order. Python's stable sort only
+    # lifts showcase records ahead of sandbox records without disturbing it.
+    out.sort(key=lambda item: not item["is_showcase"])
     return out
 
 
@@ -827,6 +869,8 @@ def get_report(
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     submission = authorized_submission(session, principal, submission_id, CAN_READ)
+    role = principal.role_in(submission.workspace_id)
+    workspace = session.get(Workspace, submission.workspace_id)
 
     version = session.scalar(
         select(SubmissionVersion)
@@ -1024,6 +1068,20 @@ def get_report(
     )
 
     return {
+        "workspace": {
+            "id": submission.workspace_id,
+            "name": workspace.name if workspace else None,
+            "role": role,
+            "is_showcase": submission.workspace_id
+            == os.getenv("ADPROOF_SHOWCASE_WORKSPACE_ID"),
+        },
+        "permissions": {
+            "read_only": role not in CAN_SUBMIT,
+            "can_retry": role in CAN_SUBMIT,
+            "can_review": role in CAN_REVIEW,
+            "can_route": role in CAN_ROUTE,
+            "can_decide_final": role in CAN_DECIDE_FINAL,
+        },
         "submission": {
             "id": submission.id,
             "state": submission.state,

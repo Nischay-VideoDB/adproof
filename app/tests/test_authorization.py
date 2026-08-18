@@ -223,6 +223,58 @@ def test_role_is_enforced_not_just_membership(env):
     assert analyst.get("/api/campaigns").status_code == 200
 
 
+def test_public_demo_gets_read_only_showcase_and_writable_sandbox(env, monkeypatch):
+    """A populated start must not weaken the tenant write boundary."""
+    client, ids = env
+    owner = login(client, "a@example.com", PASSWORD_A)
+    campaign_id = owner.post(
+        "/api/campaigns", json={**CAMPAIGN, "workspace_id": ids["ws_a"]}
+    ).json()["campaign_id"]
+
+    monkeypatch.setenv("ADPROOF_SHOWCASE_WORKSPACE_ID", ids["ws_a"])
+    demo = TestClient(client.app)
+    assert demo.post("/api/auth/demo").status_code == 200
+
+    workspaces = demo.get("/api/auth/me").json()["workspaces"]
+    showcase = next(w for w in workspaces if w["id"] == ids["ws_a"])
+    sandbox = next(w for w in workspaces if w["id"] != ids["ws_a"])
+    assert showcase == {
+        "id": ids["ws_a"],
+        "name": "Tenant A",
+        "role": "analyst",
+        "is_showcase": True,
+        "read_only": True,
+        "can_manage_campaigns": False,
+        "can_submit": False,
+    }
+    assert sandbox["role"] == "workspace_admin"
+    assert sandbox["read_only"] is False
+    assert sandbox["can_manage_campaigns"] is True
+    assert sandbox["can_submit"] is True
+
+    campaigns = demo.get("/api/campaigns").json()
+    seeded = next(c for c in campaigns if c["id"] == campaign_id)
+    assert seeded["is_showcase"] is True
+    assert seeded["can_submit"] is False
+
+    denied = demo.post(
+        "/api/submissions",
+        json={
+            "campaign_id": campaign_id,
+            "creator_reference": "must-not-write",
+            "idempotency_key": "showcase-write-denied",
+            "source_url": "https://example.invalid/video.mp4",
+        },
+    )
+    assert denied.status_code == 403
+
+    writable = demo.post(
+        "/api/campaigns",
+        json={**CAMPAIGN, "workspace_id": sandbox["id"]},
+    )
+    assert writable.status_code == 201
+
+
 def test_confirmed_by_is_the_authenticated_user_not_client_supplied(env):
     """An audit trail a caller can forge is not an audit trail."""
     client, ids = env

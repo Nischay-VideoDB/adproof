@@ -96,6 +96,8 @@ def test_integrity_endpoint_declares_no_fixtures(client):
     assert data["authorization"]["workspace_isolation"] == (
         "enforced on every read and write"
     )
+    assert data["input_capabilities"]["public_url"] is True
+    assert "publicly fetchable" in data["input_capabilities"]["production_guidance"]
     assert "not calibrated" in data["confidence_disclosure"].lower()
 
 

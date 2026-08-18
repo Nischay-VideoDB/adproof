@@ -11,13 +11,22 @@ the reverse, so an unguessed id cannot be used to widen access.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 
 from fastapi import Cookie, Depends, HTTPException, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..db import get_session
-from ..models import Campaign, MediaAsset, Membership, Submission, SubmissionVersion, User
+from ..models import (
+    Campaign,
+    MediaAsset,
+    Membership,
+    Submission,
+    SubmissionVersion,
+    User,
+    Workspace,
+)
 from ..security import SESSION_TTL_SECONDS, TokenError, issue_session, read_session
 from ..states import Role
 
@@ -75,7 +84,22 @@ def current_principal(
     memberships = session.scalars(
         select(Membership).where(Membership.user_id == user.id)
     )
-    return Principal(user=user, roles={m.workspace_id: m.role for m in memberships})
+    roles = {m.workspace_id: m.role for m in memberships}
+
+    # Public demo sessions open on a stable, populated showcase while keeping
+    # their own isolated workspace for live runs. The showcase is granted only
+    # as the existing analyst role, so every write continues through the same
+    # authorization checks as any other tenant. A stale/mistyped environment
+    # value grants nothing.
+    showcase_workspace_id = os.getenv("ADPROOF_SHOWCASE_WORKSPACE_ID")
+    if (
+        showcase_workspace_id
+        and user.email.endswith("@adproof.invalid")
+        and session.get(Workspace, showcase_workspace_id) is not None
+    ):
+        roles.setdefault(showcase_workspace_id, Role.analyst)
+
+    return Principal(user=user, roles=roles)
 
 
 def _require(principal: Principal, workspace_id: str, allowed: frozenset) -> Role:

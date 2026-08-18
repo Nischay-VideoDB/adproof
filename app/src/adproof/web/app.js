@@ -10,7 +10,9 @@
  */
 
 let currentUser = null;
+let currentWorkspaces = [];
 let campaigns = [];
+let integrityData = null;
 
 async function api(path, options = {}) {
   const res = await fetch(path, {
@@ -112,6 +114,7 @@ async function loadIntegrity() {
     const response = await api("/api/integrity");
     if (!response.ok) throw new Error(`integrity endpoint returned ${response.status}`);
     data = await response.json();
+    integrityData = data;
   } catch (err) {
     badge.textContent = "Integrity status unavailable";
     badge.className = "badge badge-error";
@@ -143,6 +146,21 @@ async function loadIntegrity() {
       );
     }
     $("disclosure").hidden = false;
+
+    const directUpload = Boolean(data.input_capabilities?.direct_file_upload);
+    const uploadField = $("file-upload-field");
+    const fileInput = uploadField?.querySelector('input[name="file"]');
+    const urlInput = document.querySelector(
+      '#submission-form input[name="source_url"]'
+    );
+    if (uploadField) uploadField.hidden = !directUpload;
+    if (fileInput) fileInput.disabled = !directUpload;
+    if (urlInput) urlInput.required = !directUpload;
+    if ($("input-guidance")) {
+      $("input-guidance").textContent = directUpload
+        ? "Submit a local video or a durable public URL. Processing time and cost scale with video length."
+        : data.input_capabilities?.production_guidance;
+    }
   } catch (err) {
     console.warn("Integrity disclosure could not be rendered", err);
   }
@@ -151,6 +169,9 @@ async function loadIntegrity() {
 async function loadSubmissions() {
   const list = $("submission-list");
   const subs = await (await api("/api/submissions")).json();
+  const selectedStillExists = subs.some((s) => s.id === currentSubmissionId);
+  const shouldOpenFirst = subs.length > 0 && !selectedStillExists;
+  if (shouldOpenFirst) currentSubmissionId = subs[0].id;
   $("submissions-empty").hidden = subs.length > 0;
   list.innerHTML = subs
     .map(
@@ -160,7 +181,12 @@ async function loadSubmissions() {
                 data-id="${esc(s.id)}">
           <span class="creator">${esc(s.creator_reference)}</span>
           <span class="campaign">${esc(s.campaign_name ?? "")}</span>
-          <span class="state-chip state-${esc(s.state)}">${esc(s.state)}</span>
+          <span class="submission-meta">
+            <span class="tag ${s.is_showcase ? "tag-showcase" : "tag-sandbox"}">${esc(
+              s.is_showcase ? "showcase" : s.workspace_name ?? "your sandbox"
+            )}</span>
+            <span class="state-chip state-${esc(s.state)}">${esc(s.state)}</span>
+          </span>
         </button>
       </li>`
     )
@@ -168,6 +194,7 @@ async function loadSubmissions() {
   list.querySelectorAll(".submission-btn").forEach((btn) =>
     btn.addEventListener("click", () => selectSubmission(btn.dataset.id))
   );
+  if (shouldOpenFirst) loadReport();
 }
 
 function selectSubmission(id) {
@@ -333,9 +360,13 @@ function renderAdjudication(report) {
   const permitted = new Set(adj.permitted_decisions);
   const rec = adj.machine_recommendation;
 
+  const mayAct = (decision) =>
+    decision === "approve" || decision === "reject"
+      ? report.permissions.can_decide_final
+      : report.permissions.can_route;
   const buttons = ["approve", "request_changes", "escalate", "reject"]
     .map((d) => {
-      const enabled = permitted.has(d);
+      const enabled = permitted.has(d) && mayAct(d);
       const isRec = rec === d;
       return `<button class="btn decision-btn ${isRec ? "btn-primary" : ""}"
         data-decision="${d}" ${enabled ? "" : "disabled"}
@@ -344,6 +375,9 @@ function renderAdjudication(report) {
       </button>`;
     })
     .join("");
+  const actions = report.permissions.read_only
+    ? `<div class="read-only-note">This is a stable showcase record. Decisions are visible, but editing is disabled.</div>`
+    : `<div class="decision-actions">${buttons}</div>`;
 
   const history = report.decisions.length
     ? `<ul class="decision-history">${report.decisions
@@ -369,7 +403,7 @@ function renderAdjudication(report) {
       <ul class="adj-reasons">${adj.reasons
         .map((r) => `<li>${esc(r)}</li>`)
         .join("")}</ul>
-      <div class="decision-actions">${buttons}</div>
+      ${actions}
       <p class="note">
         The suggestion is advisory. Nothing is approved or rejected
         automatically, and approval stays unavailable until every requirement
@@ -379,7 +413,7 @@ function renderAdjudication(report) {
     </div>`;
 }
 
-function renderRules(rules) {
+function renderRules(rules, permissions) {
   $("rules").innerHTML = rules
     .map((rule) => {
       const res = rule.result;
@@ -454,7 +488,7 @@ function renderRules(rules) {
              ${latest.reason_text ? `<p class="decision-rationale">${esc(latest.reason_text)}</p>` : ""}
            </div>`
         : "";
-      const reviewControls = res
+      const reviewControls = res && permissions.can_review
         ? `<div class="review-actions">
              <button class="btn btn-small" data-confirm="${esc(rule.id)}">Confirm</button>
              <button class="btn btn-small" data-override="${esc(rule.id)}">Override…</button>
@@ -616,6 +650,15 @@ async function loadReport() {
   $("report-placeholder").hidden = true;
   $("report-body").hidden = false;
   $("report-title").textContent = `Submission — ${data.submission.creator_reference}`;
+  $("report-sub").textContent = `${data.workspace.name ?? "Workspace"} · ${
+    data.workspace.is_showcase ? "read-only showcase" : "live workspace"
+  }`;
+  const access = $("report-access");
+  access.hidden = false;
+  access.className = `report-access ${data.permissions.read_only ? "is-read-only" : "is-writable"}`;
+  access.innerHTML = data.permissions.read_only
+    ? `<strong>Explore a completed, real run.</strong> Playback, timestamps, provider provenance, reviews and decisions are preserved; this shared record cannot be changed.`
+    : `<strong>Your live sandbox.</strong> Create campaigns, submit public media URLs, review findings and record decisions here.`;
   const chip = $("submission-state");
   chip.textContent = data.submission.state;
   chip.className = `state-chip state-${data.submission.state}`;
@@ -633,7 +676,7 @@ async function loadReport() {
   const hasTerminalFailure = data.stages.some(
     (s) => s.state === "failed_terminal"
   );
-  $("retry-btn").hidden = !hasTerminalFailure;
+  $("retry-btn").hidden = !hasTerminalFailure || !data.permissions.can_retry;
 
   if (data.media) {
     $("media-info").innerHTML = `
@@ -661,7 +704,7 @@ async function loadReport() {
   }
 
   $("adjudication-slot").innerHTML = renderAdjudication(data);
-  renderRules(data.rules);
+  renderRules(data.rules, data.permissions);
 
   const firstEvidence = data.rules.flatMap((r) => r.evidence)[0];
   if (data.media && firstEvidence) preloadPlayer(firstEvidence.id);
@@ -707,19 +750,27 @@ async function loadCampaigns() {
     .map(
       (c) => `<li><div class="campaign-row">
         <span class="creator">${esc(c.name)}</span>
-        <span class="campaign">rule set v${esc(c.rule_set_version ?? "—")}</span>
+        <span class="campaign">${esc(c.workspace_name ?? "Workspace")} · rule set v${esc(
+          c.rule_set_version ?? "—"
+        )}</span>
+        <span class="tag ${c.is_showcase ? "tag-showcase" : "tag-sandbox"}">${esc(
+          c.is_showcase ? "showcase · read only" : "live workspace"
+        )}</span>
       </div></li>`
     )
     .join("");
   const select = document.querySelector('#submission-form select[name="campaign_id"]');
-  select.innerHTML = campaigns
+  const writableCampaigns = campaigns.filter((c) => c.can_submit);
+  select.innerHTML = writableCampaigns
     .map((c) => `<option value="${esc(c.id)}">${esc(c.name)}</option>`)
     .join("");
+  $("new-submission").disabled = writableCampaigns.length === 0;
+  $("new-campaign").disabled = !currentWorkspaces.some((w) => w.can_manage_campaigns);
 }
 
 $("new-submission").addEventListener("click", () => {
-  if (!campaigns.length) {
-    alert("Create a campaign with requirements first.");
+  if (!campaigns.some((c) => c.can_submit)) {
+    alert("Create a campaign in your live sandbox first.");
     return;
   }
   $("submission-dialog").showModal();
@@ -743,6 +794,7 @@ $("campaign-form").addEventListener("submit", async (e) => {
   const res = await api("/api/campaigns", {
     method: "POST",
     body: JSON.stringify({
+      workspace_id: currentWorkspaces.find((w) => w.can_manage_campaigns)?.id,
       campaign_name: f.get("campaign_name"),
       brief_text: f.get("brief_text"),
       rules: collectRules(),
@@ -770,14 +822,17 @@ $("submission-form").addEventListener("submit", async (e) => {
   const file = f.get("file");
   const url = f.get("source_url");
   const err0 = $("submission-error");
-  if ((!file || !file.size) && !url) {
-    err0.textContent = "Choose a video file or provide a URL.";
+  const directUpload = Boolean(integrityData?.input_capabilities?.direct_file_upload);
+  if ((!directUpload || !file || !file.size) && !url) {
+    err0.textContent = directUpload
+      ? "Choose a video file or provide a URL."
+      : "Provide a durable, publicly fetchable video URL.";
     err0.hidden = false;
     return;
   }
   const idem = `ui-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   let res;
-  if (file && file.size) {
+  if (directUpload && file && file.size) {
     // Multipart upload. fetch directly: api() sets a JSON content-type, and
     // multipart needs the browser to set its own boundary header.
     const form = new FormData();
@@ -1139,10 +1194,17 @@ async function boot() {
     return;
   }
   currentUser = me.user;
-  const ws = me.workspaces[0];
-  $("who").textContent = ws
-    ? `${me.user.email} · ${ws.name ?? ""} (${ws.role})`
-    : me.user.email;
+  currentWorkspaces = me.workspaces;
+  const showcase = currentWorkspaces.find((w) => w.is_showcase);
+  const sandbox = currentWorkspaces.find((w) => w.can_submit && !w.is_showcase);
+  $("who").textContent = me.user.name || me.user.email;
+  if (showcase && sandbox) {
+    $("workspace-banner-copy").textContent =
+      "Open the shared showcase to present completed evidence immediately, or use your isolated live sandbox to create a campaign and process a new URL.";
+    $("workspace-banner").hidden = false;
+  } else {
+    $("workspace-banner").hidden = true;
+  }
   showApp();
   loadIntegrity();
   loadCampaigns();

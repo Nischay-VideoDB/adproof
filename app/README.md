@@ -1,4 +1,4 @@
-# AdProof — Phase 1 vertical slice
+# AdProof — evidence-first campaign verification
 
 Proves one thing end to end: **a real video can be ingested into VideoDB,
 indexed for speech and vision, searched for real timestamped evidence,
@@ -9,13 +9,23 @@ represented honestly.
 Provider behaviour was verified before implementation. See
 [`../docs/VIDEODB_VERIFIED_BEHAVIOR.md`](../docs/VIDEODB_VERIFIED_BEHAVIOR.md).
 
-## What is deliberately not here
+## What is in the hosted product
 
-Absent, not stubbed: authentication, authorization, workspace isolation
-enforcement, rule editor, brief-to-rule extraction, review actions
-(confirm/override/escalate), approval decisions, evidence reels, exports,
-analytics, webhooks. Only two rule types exist. `/api/integrity` states these
-limits, and the UI renders them.
+The production app includes authenticated, workspace-isolated campaigns;
+nine structured rule types; URL submission; durable Postgres jobs; real
+VideoDB speech and focused visual indexes; timestamped evidence and proxied
+HLS playback; confirm/override review actions; request-changes, escalation,
+approval and rejection decisions; audit history; revision drafts; and campaign
+analytics.
+
+Public visitors receive two scopes through the same authorization layer:
+
+- `AdProof Client Showcase` — analyst/read-only access to four completed,
+  curated, provider-backed NASA public-domain studies.
+- `Public AdProof test` — an isolated writable sandbox for defining a campaign
+  and processing a durable public video URL.
+
+The showcase is additive. It does not replace or disable the live workflow.
 
 There is **no fixture data anywhere in this build.** `EvidenceOrigin` has a
 single member, `live_provider`, so fixture evidence is not representable. If
@@ -39,9 +49,10 @@ VIDEODB_API_KEY=... ./.venv/bin/python scripts/verify_videodb_spike.py \
 Prints the real provider responses and resolves the open assumptions listed in
 `VIDEODB_VERIFIED_BEHAVIOR.md` s4. It writes nothing to the database.
 
-## Run
+## Run locally
 
-Two processes. The worker is separate because provider calls block.
+The local developer workflow uses two processes because provider calls block.
+The Vercel route drains one bounded durable job chain inside the request.
 
 ```bash
 # terminal 1 — API + UI
@@ -60,13 +71,24 @@ Open <http://127.0.0.1:8000/> and select the submission.
 Expect ingestion and indexing to take minutes. Visual indexing runs a VLM over
 a frame every 2 seconds, so cost scales with video length — start short.
 
-## Public prepared-review showcase
+## Populate the production showcase
 
-`public/` is a deliberately separate, static Vercel showcase. It uses clearly
-labelled representative PulseBar review scenarios and has no upload, provider,
-database, credential, or shared-state path. It is not a substitute for the
-operator workflow above: real processing still requires the local API and the
-separate worker so provider calls remain outside request handling.
+With production credentials exported, run:
+
+```bash
+./.venv/bin/python scripts/seed_showcase.py --apply --curate
+```
+
+The command is idempotent. It creates the showcase workspace and campaign,
+submits four official NASA direct-MP4 sources through the normal authenticated
+API, runs genuine VideoDB indexing/retrieval/evaluation, then appends the
+curator reviews and final approvals. It never inserts fixture evidence or
+duplicates provider work. Configure `ADPROOF_SHOWCASE_WORKSPACE_ID` to the ID it
+prints.
+
+`/examples` remains a separate browser-only prepared walkthrough. It is useful
+for explaining outcome shapes, but is explicitly labelled and never presented
+as provider output.
 
 ## Tests
 
@@ -117,13 +139,16 @@ appear to start on the strength of a stage that failed.
 
 ## Known gaps in this build
 
-1. **No access control on playback.** `/api/evidence/{id}/playback` returns a
-   provider URL that is assumed not to be access controlled. Do not use with
-   real creator media.
-2. **No authentication.** Every caller sees every workspace.
-3. **Coarse async state.** No progress percentage, because VideoDB gives this
+1. **Coarse async state.** No progress percentage, because VideoDB gives this
    SDK version no progress signal.
-4. **Uncalibrated confidence.** Bands are provisional and labelled as such.
-5. **Re-evaluation not supported.** Results are immutable and a second
+2. **Uncalibrated confidence.** Bands are provisional and labelled as such.
+3. **Field validation is partial.** All nine rule types are implemented and
+   tested; required spoken phrase and minimum visual duration have the deepest
+   real-media validation. The UI and `/api/integrity` disclose this.
+4. **Direct browser uploads are local-only.** The serverless production demo
+   accepts durable public video URLs; its UI does not offer a file control.
+5. **Re-evaluation is not supported.** Results are immutable and a second
    evaluation is skipped rather than overwriting history; report versioning is
-   Phase 4 work.
+   future work.
+6. **Evidence reels and exports are not implemented.** Exact evidence moments
+   remain playable through the authenticated HLS proxy.

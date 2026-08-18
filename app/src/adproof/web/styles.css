@@ -80,9 +80,35 @@ code {
   font-size: 12.5px; font-weight: 600; padding: 0;
 }
 
+.workspace-banner {
+  margin: 14px 20px 0;
+  padding: 16px 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  background: var(--panel);
+  border: 1px solid rgba(129,140,248,.45);
+  border-radius: 12px;
+}
+.workspace-banner strong { display: block; font-size: 15px; margin-top: 2px; }
+.workspace-banner p { margin: 4px 0 0; color: var(--muted); font-size: 12.5px; max-width: 760px; }
+.eyebrow { color: var(--primary); font-size: 10px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; }
+.workspace-legend { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; min-width: max-content; }
+.tag-showcase { border-color: rgba(167,139,250,.55); color: var(--review); background: rgba(167,139,250,.08); }
+.tag-sandbox { border-color: rgba(61,214,140,.5); color: var(--pass); background: rgba(61,214,140,.07); }
+
 /* ── layout ────────────────────────────────────────────────────────────── */
 main, .view { display: grid; grid-template-columns: 300px 1fr; gap: 16px; padding: 16px 20px; }
-@media (max-width: 900px) { main, .view { grid-template-columns: 1fr; } }
+@media (max-width: 900px) {
+  main, .view { grid-template-columns: 1fr; }
+  .workspace-banner { align-items: flex-start; flex-direction: column; }
+  .workspace-legend { justify-content: flex-start; min-width: 0; }
+  .topbar { height: auto; min-height: 60px; flex-wrap: wrap; padding-block: 10px; }
+  .tabs { order: 3; width: 100%; margin-left: 0; overflow-x: auto; }
+  .topbar-right { margin-left: auto; }
+  #integrity-badge { display: none; }
+}
 .view-single { grid-template-columns: 1fr; }
 .sidebar { align-self: start; position: sticky; top: 76px; }
 
@@ -113,6 +139,7 @@ h5 { margin: 0 0 8px; font-size: 11px; text-transform: uppercase; letter-spacing
 .submission-btn.active { background: var(--panel-2); border-color: var(--primary); }
 .submission-btn .creator { font-weight: 600; font-size: 13.5px; }
 .submission-btn .campaign { color: var(--muted); font-size: 12px; }
+.submission-meta { display: flex; align-items: center; justify-content: space-between; gap: 7px; }
 .campaign-row {
   display: flex; flex-direction: column; gap: 3px;
   padding: 10px 12px; background: var(--panel-2);
@@ -140,6 +167,13 @@ h5 { margin: 0 0 8px; font-size: 11px; text-transform: uppercase; letter-spacing
 
 .alert { padding: 10px 14px; border-radius: 9px; margin: 12px 0; font-size: 13px; }
 .alert-error { background: rgba(240,113,110,.08); border: 1px solid rgba(240,113,110,.45); color: #FCA5A3; }
+.report-access {
+  margin: 12px 0 4px; padding: 10px 12px; border-radius: 9px;
+  font-size: 12.5px; color: var(--muted); line-height: 1.5;
+}
+.report-access strong { color: var(--text); }
+.report-access.is-read-only { border: 1px solid rgba(167,139,250,.35); background: rgba(167,139,250,.06); }
+.report-access.is-writable { border: 1px solid rgba(61,214,140,.3); background: rgba(61,214,140,.05); }
 
 /* ── buttons ───────────────────────────────────────────────────────────── */
 .btn {
@@ -148,6 +182,8 @@ h5 { margin: 0 0 8px; font-size: 11px; text-transform: uppercase; letter-spacing
   font-weight: 550; transition: background .15s, border-color .15s, transform .1s;
 }
 .btn:hover { border-color: var(--primary); background: var(--panel-3); }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.btn:disabled:hover { border-color: var(--border); background: var(--panel-2); }
 .btn:active { transform: translateY(1px); }
 .btn-primary { background: var(--primary); border-color: var(--primary); color: var(--on-primary); font-weight: 650; }
 .btn-primary:hover { filter: brightness(1.1); background: var(--primary); }
@@ -302,6 +338,11 @@ video {
 .decision-history { list-style: none; margin: 14px 0 0; padding: 12px 0 0; border-top: 1px solid var(--border); font-size: 13px; }
 .decision-history li { margin-bottom: 10px; }
 .decision-rationale { color: #C3CAD6; font-size: 12.5px; margin: 3px 0 0; }
+.read-only-note {
+  padding: 10px 12px; border-radius: 8px; color: var(--review);
+  background: rgba(167,139,250,.07); border: 1px solid rgba(167,139,250,.3);
+  font-size: 12.5px;
+}
 
 .review-actions { display: flex; gap: 8px; margin-top: 12px; }
 .human-verdict {

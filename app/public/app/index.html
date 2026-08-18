@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="/static/styles.css?v=13" />
+<link rel="stylesheet" href="/static/styles.css?v=15" />
 </head>
 <body>
 
@@ -54,6 +54,18 @@
     <ul id="disclosure-list" hidden></ul>
   </div>
 
+  <section id="workspace-banner" class="workspace-banner" hidden>
+    <div>
+      <span class="eyebrow">Client-ready starting point</span>
+      <strong>Provider-backed reviews are ready to explore.</strong>
+      <p id="workspace-banner-copy"></p>
+    </div>
+    <div class="workspace-legend">
+      <span class="tag tag-showcase">Showcase · read only</span>
+      <span class="tag tag-sandbox">Your sandbox · live</span>
+    </div>
+  </section>
+
   <!-- review -->
   <main id="view-review" class="view">
     <section class="panel sidebar">
@@ -82,6 +94,7 @@
           <span id="submission-state" class="state-chip"></span>
           <button id="retry-btn" class="btn" hidden>Retry failed stages</button>
         </div>
+        <div id="report-access" class="report-access" hidden></div>
 
         <div id="submission-error" class="alert alert-error" hidden></div>
 
@@ -141,9 +154,10 @@
         <li><strong>Review.</strong> Open any finding at its exact timestamp, with full provenance.</li>
       </ol>
       <p class="note">
-        Only two rule types are implemented: required spoken phrase, and
-        minimum visual duration. Subjective requirements are routed to human
-        review and are never machine-scored.
+        Nine rule types are implemented. Required spoken phrase and minimum
+        visual duration are field-validated against real media; the other
+        types remain explicitly labelled as implemented but not yet
+        field-validated. Subjective requirements always route to a person.
       </p>
     </section>
   </main>
@@ -180,11 +194,11 @@
     <h3>New submission</h3>
     <label>Campaign<select name="campaign_id" required></select></label>
     <label>Creator reference<input name="creator_reference" required placeholder="creator-001" /></label>
-    <label>Video file
+    <label id="file-upload-field">Video file
       <input name="file" type="file" accept="video/mp4,video/quicktime,.mp4,.mov,.m4v,.webm,.mkv" /></label>
-    <label>…or a video URL (must be publicly fetchable by VideoDB)
+    <label>Video URL (must be publicly fetchable by VideoDB)
       <input name="source_url" type="url" placeholder="https://…/video.mp4" /></label>
-    <p class="note">
+    <p id="input-guidance" class="note">
       Processing is metered by VideoDB. Visual indexing samples a frame every
       2 seconds, so cost and time scale with video length.
     </p>
@@ -265,6 +279,6 @@
 </dialog>
 
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
-<script src="/static/app.js?v=14"></script>
+<script src="/static/app.js?v=15"></script>
 </body>
 </html>
