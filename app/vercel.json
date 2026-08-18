@@ -1,10 +1,32 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "outputDirectory": "public",
+  "functions": {
+    "api/index.py": {
+      "maxDuration": 1800,
+      "includeFiles": "{src/adproof/web/**,public/**}",
+      "excludeFiles": "{tests/**,docs/**,scripts/**}"
+    }
+  },
   "rewrites": [
     {
       "source": "/favicon.ico",
       "destination": "/adproof-mark.svg"
+    },
+    {
+      "source": "/examples",
+      "destination": "/examples.html"
+    },
+    {
+      "source": "/app",
+      "destination": "/app/index.html"
+    },
+    {
+      "source": "/api/:path*",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/media/:path*",
+      "destination": "/api/index.py"
     }
   ]
 }

@@ -107,27 +107,44 @@ const fmtTime = (s) => {
 
 async function loadIntegrity() {
   const badge = $("integrity-badge");
+  let data;
   try {
-    const data = await (await api("/api/integrity")).json();
-    if (data.provider_configured) {
-      badge.textContent = "Live provider — no fixture data";
-      badge.className = "badge badge-live";
-    } else {
-      badge.textContent = "VideoDB not configured — processing will fail";
-      badge.className = "badge badge-error";
-    }
-    const list = $("disclosure-list");
-    list.innerHTML = data.known_limitations
-      .map((l) => `<li>${esc(l)}</li>`)
-      .join("");
-    list.insertAdjacentHTML(
-      "beforeend",
-      `<li>${esc(data.confidence_disclosure)}</li>`
-    );
-    $("disclosure").hidden = false;
+    const response = await api("/api/integrity");
+    if (!response.ok) throw new Error(`integrity endpoint returned ${response.status}`);
+    data = await response.json();
   } catch (err) {
     badge.textContent = "Integrity status unavailable";
     badge.className = "badge badge-error";
+    return;
+  }
+
+  // Provider integrity is the high-value status. A missing disclosure node or
+  // an unexpected optional field must never overwrite a successful live check.
+  if (data.provider_configured) {
+    badge.textContent = "Live provider — no fixture data";
+    badge.className = "badge badge-live";
+  } else {
+    badge.textContent = "VideoDB not configured — processing will fail";
+    badge.className = "badge badge-error";
+  }
+
+  try {
+    const list = $("disclosure-list");
+    const limitations = Array.isArray(data.known_limitations)
+      ? data.known_limitations
+      : [];
+    list.innerHTML = limitations
+      .map((l) => `<li>${esc(l)}</li>`)
+      .join("");
+    if (data.confidence_disclosure) {
+      list.insertAdjacentHTML(
+        "beforeend",
+        `<li>${esc(data.confidence_disclosure)}</li>`
+      );
+    }
+    $("disclosure").hidden = false;
+  } catch (err) {
+    console.warn("Integrity disclosure could not be rendered", err);
   }
 }
 
@@ -1101,7 +1118,17 @@ $("logout").addEventListener("click", async () => {
 async function boot() {
   let me;
   try {
-    const res = await fetch("/api/auth/me", { credentials: "same-origin" });
+    let res = await fetch("/api/auth/me", { credentials: "same-origin" });
+    if (!res.ok && new URLSearchParams(location.search).get("demo") === "1") {
+      res = await fetch("/api/auth/demo", {
+        method: "POST",
+        credentials: "same-origin",
+      });
+      if (res.ok) {
+        history.replaceState({}, "", "/app");
+        res = await fetch("/api/auth/me", { credentials: "same-origin" });
+      }
+    }
     if (!res.ok) {
       showLogin();
       return;

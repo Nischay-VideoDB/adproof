@@ -46,7 +46,11 @@ def load_settings() -> Settings:
         database_url=os.getenv(
             "ADPROOF_DATABASE_URL", "postgresql+psycopg:///adproof"
         ),
-        videodb_api_key=os.getenv("VIDEODB_API_KEY") or None,
+        videodb_api_key=(
+            os.getenv("VIDEODB_API_KEY")
+            or os.getenv("VIDEO_DB_API_KEY")
+            or None
+        ),
         videodb_collection_id=os.getenv("VIDEODB_COLLECTION_ID") or None,
         max_job_attempts=int(os.getenv("ADPROOF_MAX_JOB_ATTEMPTS", "3")),
         worker_poll_seconds=float(os.getenv("ADPROOF_WORKER_POLL_SECONDS", "2")),

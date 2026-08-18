@@ -17,7 +17,7 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, Response, Uploa
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -25,6 +25,7 @@ from ..audit import events_for_subject, record_audit
 from ..config import settings
 from ..db import get_session, init_db
 from ..security import hash_password, verify_password
+from ..orchestrator.worker import run_version_until_idle
 from .auth import (
     Principal,
     authorized_campaign,
@@ -79,6 +80,7 @@ from ..states import (
     ModalityRequirement,
     OverrideReason,
     ReviewAction,
+    Role,
     RuleResultState,
     RuleType,
     Severity,
@@ -153,6 +155,47 @@ def login(
 def logout(response: Response) -> dict[str, bool]:
     clear_session_cookie(response)
     return {"ok": True}
+
+
+@app.post("/api/auth/demo")
+def demo_session(
+    response: Response,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Provision an isolated public test workspace and sign its reviewer in."""
+    day_start = utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    todays = session.scalar(
+        select(func.count(User.id)).where(
+            User.email.like("demo-%@adproof.invalid"),
+            User.created_at >= day_start,
+        )
+    ) or 0
+    if todays >= 30:
+        raise HTTPException(429, "Today's public test-workspace budget is full.")
+
+    token = uuid.uuid4().hex
+    workspace = Workspace(name="Public AdProof test")
+    user = User(
+        email=f"demo-{token}@adproof.invalid",
+        display_name="Demo reviewer",
+        password_hash=hash_password(uuid.uuid4().hex),
+    )
+    session.add_all([workspace, user])
+    session.flush()
+    session.add(
+        Membership(
+            user_id=user.id,
+            workspace_id=workspace.id,
+            role=Role.workspace_admin,
+        )
+    )
+    session.commit()
+    set_session_cookie(response, user.id, secure=settings.cookies_secure)
+    return {
+        "user": {"id": user.id, "name": user.display_name},
+        "workspace_id": workspace.id,
+        "limits": {"campaigns": 5, "submissions": 3},
+    }
 
 
 @app.get("/api/auth/me")
@@ -373,6 +416,17 @@ def create_campaign(
     already authored.
     """
     from ..models import BriefVersion
+
+    if principal.user.email.endswith("@adproof.invalid"):
+        campaign_count = session.scalar(
+            select(func.count(Campaign.id)).where(
+                Campaign.workspace_id.in_(principal.workspace_ids)
+            )
+        ) or 0
+        if campaign_count >= 5:
+            raise HTTPException(
+                429, "Public test workspaces are limited to five campaigns."
+            )
 
     # The workspace comes from the caller's memberships, never from the request
     # body: accepting a caller-supplied workspace would let anyone write into
@@ -629,7 +683,17 @@ def create_submission(
     campaign = authorized_campaign(
         session, principal, payload.campaign_id, CAN_SUBMIT
     )
-    return _create_submission_core(
+    if principal.user.email.endswith("@adproof.invalid"):
+        submission_count = session.scalar(
+            select(func.count(Submission.id)).where(
+                Submission.workspace_id == campaign.workspace_id
+            )
+        ) or 0
+        if submission_count >= 3:
+            raise HTTPException(
+                429, "Public test workspaces are limited to three live submissions."
+            )
+    created = _create_submission_core(
         session,
         principal,
         campaign,
@@ -639,6 +703,11 @@ def create_submission(
         source_url=payload.source_url,
         source_file_path=payload.source_file_path,
     )
+    if not created["idempotent_replay"]:
+        created["jobs_processed"] = run_version_until_idle(
+            created["submission_version_id"]
+        )
+    return created
 
 
 #: Where uploaded media lands before ingestion. The original file is retained
@@ -664,6 +733,12 @@ def create_submission_from_file(
     The file is stored under a server-generated name (never the client's, which
     is untrusted), then follows the identical path as a URL submission.
     """
+    if os.getenv("ADPROOF_ENV") == "production":
+        raise HTTPException(
+            422,
+            "Direct file upload is disabled on the serverless public demo. "
+            "Use a public video URL so the source remains durable.",
+        )
     campaign = authorized_campaign(session, principal, campaign_id, CAN_SUBMIT)
 
     suffix = Path(file.filename or "").suffix.lower()
@@ -1130,6 +1205,12 @@ if WEB_DIR.exists():
         return FileResponse(
             WEB_DIR / "index.html",
             headers={"Cache-Control": "no-cache, must-revalidate"},
+        )
+
+    @app.get("/examples")
+    def prepared_examples() -> FileResponse:
+        return FileResponse(
+            Path(__file__).resolve().parents[3] / "public" / "examples.html"
         )
 
 

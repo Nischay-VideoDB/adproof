@@ -60,18 +60,24 @@ def enqueue(
     return job
 
 
-def claim_next(session: Session) -> ProcessingJob | None:
+def claim_next(
+    session: Session, submission_version_id: str | None = None
+) -> ProcessingJob | None:
     """Atomically claim one runnable job.
 
     SKIP LOCKED means concurrent workers never claim the same job, so no
     provider operation runs twice concurrently.
     """
-    job = session.scalar(
-        select(ProcessingJob)
-        .where(
+    query = select(ProcessingJob).where(
             ProcessingJob.state.in_([JobState.queued, JobState.failed_retryable]),
             ProcessingJob.attempt_count < ProcessingJob.max_attempts,
         )
+    if submission_version_id is not None:
+        query = query.where(
+            ProcessingJob.submission_version_id == submission_version_id
+        )
+    job = session.scalar(
+        query
         .order_by(ProcessingJob.created_at)
         .limit(1)
         .with_for_update(skip_locked=True)

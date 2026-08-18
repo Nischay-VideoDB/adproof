@@ -79,11 +79,14 @@ def _on_terminal_failure(session: Session, job: ProcessingJob) -> None:
     )
 
 
-def run_once(adapter: VideoDBAdapter | None = None) -> bool:
+def run_once(
+    adapter: VideoDBAdapter | None = None,
+    submission_version_id: str | None = None,
+) -> bool:
     """Claim and run at most one job. Returns True if a job was processed."""
     session = SessionLocal()
     try:
-        job = claim_next(session)
+        job = claim_next(session, submission_version_id=submission_version_id)
         if job is None:
             session.commit()
             return False
@@ -137,6 +140,17 @@ def run_once(adapter: VideoDBAdapter | None = None) -> bool:
         return True
     finally:
         session.close()
+
+
+def run_version_until_idle(submission_version_id: str, max_jobs: int = 32) -> int:
+    """Drain one durable Postgres job chain inside a long Vercel request."""
+    processed = 0
+    adapter = VideoDBAdapter()
+    while processed < max_jobs and run_once(
+        adapter=adapter, submission_version_id=submission_version_id
+    ):
+        processed += 1
+    return processed
 
 
 def main() -> None:
