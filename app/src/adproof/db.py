@@ -19,6 +19,13 @@ from .models import Base
 engine = create_engine(settings.database_url, future=True, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
+# PostgreSQL advisory-lock keys are application-defined signed 32-bit values.
+# ``0x41445052`` spells ``ADPR``; the second key versions this bootstrap lock.
+# Keeping schema creation and trigger replacement behind one transaction-level
+# lock prevents simultaneous serverless cold starts from racing on catalog DDL.
+_SCHEMA_LOCK_NAMESPACE = 0x41445052
+_SCHEMA_LOCK_RESOURCE = 1
+
 
 #: Tables that may never be updated or deleted once a row exists.
 FULLY_IMMUTABLE_TABLES = (
@@ -114,10 +121,25 @@ def _install_immutability_triggers(connection) -> None:
 
 
 def init_db() -> None:
-    Base.metadata.create_all(engine)
     if engine.dialect.name == "postgresql":
         with engine.begin() as connection:
+            # PostgreSQL releases this automatically with the transaction. A
+            # concurrent cold start waits here, then observes the completed
+            # schema instead of issuing overlapping CREATE OR REPLACE / DROP
+            # TRIGGER statements against the same catalog tuples.
+            connection.execute(
+                text(
+                    "SELECT pg_advisory_xact_lock(:namespace, :resource)"
+                ),
+                {
+                    "namespace": _SCHEMA_LOCK_NAMESPACE,
+                    "resource": _SCHEMA_LOCK_RESOURCE,
+                },
+            )
+            Base.metadata.create_all(connection)
             _install_immutability_triggers(connection)
+    else:
+        Base.metadata.create_all(engine)
 
 
 @contextmanager
