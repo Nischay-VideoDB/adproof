@@ -86,18 +86,19 @@ def current_principal(
     )
     roles = {m.workspace_id: m.role for m in memberships}
 
-    # Public demo sessions open on a stable, populated showcase while keeping
-    # their own isolated workspace for live runs. The showcase is granted only
-    # as the existing analyst role, so every write continues through the same
-    # authorization checks as any other tenant. A stale/mistyped environment
+    # Public demo sessions are restricted to the stable showcase regardless of
+    # memberships left behind by the previous disposable-demo implementation.
+    # The analyst role makes the showcase readable but leaves every mutation
+    # behind the normal authorization checks. A stale/mistyped environment
     # value grants nothing.
     showcase_workspace_id = os.getenv("ADPROOF_SHOWCASE_WORKSPACE_ID")
-    if (
-        showcase_workspace_id
-        and user.email.endswith("@adproof.invalid")
-        and session.get(Workspace, showcase_workspace_id) is not None
-    ):
-        roles.setdefault(showcase_workspace_id, Role.analyst)
+    if user.email.endswith("@adproof.invalid"):
+        roles = {}
+        if (
+            showcase_workspace_id
+            and session.get(Workspace, showcase_workspace_id) is not None
+        ):
+            roles[showcase_workspace_id] = Role.analyst
 
     return Principal(user=user, roles=roles)
 

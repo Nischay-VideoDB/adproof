@@ -17,7 +17,7 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, Response, Uploa
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -162,39 +162,43 @@ def demo_session(
     response: Response,
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    """Provision an isolated public test workspace and sign its reviewer in."""
-    day_start = utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-    todays = session.scalar(
-        select(func.count(User.id)).where(
-            User.email.like("demo-%@adproof.invalid"),
-            User.created_at >= day_start,
-        )
-    ) or 0
-    if todays >= 30:
-        raise HTTPException(429, "Today's public test-workspace budget is full.")
+    """Open the stable read-only showcase as an anonymous guest.
 
-    token = uuid.uuid4().hex
-    workspace = Workspace(name="Public AdProof test")
-    user = User(
-        email=f"demo-{token}@adproof.invalid",
-        display_name="Demo reviewer",
-        password_hash=hash_password(uuid.uuid4().hex),
-    )
-    session.add_all([workspace, user])
-    session.flush()
-    session.add(
-        Membership(
-            user_id=user.id,
-            workspace_id=workspace.id,
-            role=Role.workspace_admin,
+    The guest is a real, server-issued session principal so the ordinary
+    authorization and media-token paths remain in force. It deliberately has
+    no persisted workspace memberships and therefore cannot write. Reusing one
+    identity also avoids creating a database user and workspace per visitor.
+    """
+    guest_email = "public-showcase@adproof.invalid"
+
+    # A transaction advisory lock makes first-visitor creation safe across
+    # concurrent serverless cold starts. It is released automatically when the
+    # request transaction commits.
+    if session.bind and session.bind.dialect.name == "postgresql":
+        session.execute(
+            text("SELECT pg_advisory_xact_lock(:namespace, :resource)"),
+            {"namespace": 0x41445052, "resource": 2},
         )
-    )
+
+    user = session.scalar(select(User).where(User.email == guest_email))
+    if user is None:
+        user = User(
+            email=guest_email,
+            display_name="Public showcase",
+            # The generated credential is discarded, so this identity cannot
+            # be reached through the password login endpoint.
+            password_hash=hash_password(uuid.uuid4().hex),
+        )
+        session.add(user)
+        session.flush()
+    else:
+        user.is_active = True
+
     session.commit()
     set_session_cookie(response, user.id, secure=settings.cookies_secure)
     return {
-        "user": {"id": user.id, "name": user.display_name},
-        "workspace_id": workspace.id,
-        "limits": {"campaigns": 5, "submissions": 3},
+        "user": {"id": user.id, "name": user.display_name, "is_demo": True},
+        "access": "read_only_showcase",
     }
 
 
@@ -205,6 +209,7 @@ def me(
 ) -> dict[str, Any]:
     workspaces = []
     showcase_workspace_id = os.getenv("ADPROOF_SHOWCASE_WORKSPACE_ID")
+    is_demo = principal.user.email.endswith("@adproof.invalid")
     for workspace_id, role in principal.roles.items():
         workspace = session.get(Workspace, workspace_id)
         workspaces.append(
@@ -224,6 +229,7 @@ def me(
             "id": principal.user.id,
             "email": principal.user.email,
             "name": principal.user.display_name,
+            "is_demo": is_demo,
         },
         "workspaces": workspaces,
     }
@@ -445,8 +451,9 @@ def create_campaign(
     workspace = session.get(Workspace, workspace_id)
 
     if principal.user.email.endswith("@adproof.invalid"):
-        # Count only the caller's writable sandbox. The additive read-only
-        # showcase must not consume their five-campaign live-test allowance.
+        # Bound disposable legacy demo accounts if any old cookie is replayed.
+        # The current public guest has no writable role, so authorization above
+        # rejects it before this quota path.
         campaign_count = session.scalar(
             select(func.count(Campaign.id)).where(
                 Campaign.workspace_id == workspace_id
@@ -1253,8 +1260,9 @@ if WEB_DIR.exists():
     def review_app() -> FileResponse:
         """The reviewer application shell.
 
-        Served to anyone, but it renders only a login form until a session
-        exists: every data endpoint it calls requires authentication.
+        Served to anyone. With no authenticated account session, the client
+        obtains a server-issued read-only guest session and opens the populated
+        showcase. Persistent work still requires password authentication.
 
         no-cache so a stale shell can never reference stale assets: a cached
         HTML + cached CSS pair is exactly what made every view render stacked

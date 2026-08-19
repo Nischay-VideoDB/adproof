@@ -13,36 +13,51 @@ let currentUser = null;
 let currentWorkspaces = [];
 let campaigns = [];
 let integrityData = null;
+let pendingAuthIntent = null;
+let continueToSubmission = false;
 
 async function api(path, options = {}) {
-  const res = await fetch(path, {
+  const request = () => fetch(path, {
     credentials: "same-origin",
     headers: { "Content-Type": "application/json" },
     ...options,
   });
+  let res = await request();
+  if (res.status === 401 && (!currentUser || isDemoVisitor())) {
+    const guest = await establishDemoSession();
+    if (guest) res = await request();
+  }
   if (res.status === 401) {
-    showLogin();
+    openLogin("Your session expired. Log in again to continue your work.");
     throw new Error("unauthenticated");
   }
   return res;
 }
 
-function showLogin(message) {
-  document.getElementById("app-view").hidden = true;
-  const view = document.getElementById("login-view");
-  view.hidden = false;
-  const err = document.getElementById("login-error");
-  if (message) {
-    err.textContent = message;
-    err.hidden = false;
-  } else {
-    err.hidden = true;
-  }
+function isDemoVisitor() {
+  return Boolean(currentUser?.is_demo);
+}
+
+function openLogin(context, intent = null) {
+  if (intent) pendingAuthIntent = intent;
+  $("login-context").textContent = context ||
+    "Access your private workspace and continue your campaign work.";
+  $("login-error").hidden = true;
+  const dialog = $("login-dialog");
+  if (!dialog.open) dialog.showModal();
+  requestAnimationFrame(() => $("login-email").focus());
 }
 
 function showApp() {
-  document.getElementById("login-view").hidden = true;
   document.getElementById("app-view").hidden = false;
+}
+
+async function establishDemoSession() {
+  const response = await fetch("/api/auth/demo", {
+    method: "POST",
+    credentials: "same-origin",
+  });
+  return response.ok;
 }
 
 /* AdProof review UI - Phase 1 slice.
@@ -169,6 +184,20 @@ async function loadIntegrity() {
 async function loadSubmissions() {
   const list = $("submission-list");
   const subs = await (await api("/api/submissions")).json();
+  if (!subs.length) {
+    currentSubmissionId = null;
+    $("report-body").hidden = true;
+    $("report-placeholder").hidden = false;
+    const player = $("player");
+    player.pause();
+    if (hls) {
+      hls.destroy();
+      hls = null;
+    }
+    player.removeAttribute("src");
+    player.dataset.src = "";
+    player.load();
+  }
   const selectedStillExists = subs.some((s) => s.id === currentSubmissionId);
   const shouldOpenFirst = subs.length > 0 && !selectedStillExists;
   if (shouldOpenFirst) currentSubmissionId = subs[0].id;
@@ -764,29 +793,50 @@ async function loadCampaigns() {
   select.innerHTML = writableCampaigns
     .map((c) => `<option value="${esc(c.id)}">${esc(c.name)}</option>`)
     .join("");
-  $("new-submission").disabled = writableCampaigns.length === 0;
-  $("new-campaign").disabled = !currentWorkspaces.some((w) => w.can_manage_campaigns);
+  // Demo calls to action stay enabled. Selecting one explains the value and
+  // opens login in context instead of presenting a disabled dead end.
+  $("new-submission").disabled = false;
+  $("new-campaign").disabled = false;
 }
 
-$("new-submission").addEventListener("click", () => {
+function openNewSubmission() {
+  if (isDemoVisitor()) {
+    openLogin(
+      "Log in to add a submission. Your private workspace will open here without leaving the showcase.",
+      "submission"
+    );
+    return;
+  }
   if (!campaigns.some((c) => c.can_submit)) {
-    alert("Create a campaign in your live sandbox first.");
+    continueToSubmission = true;
+    openNewCampaign();
     return;
   }
   $("submission-dialog").showModal();
-});
+}
+
+$("new-submission").addEventListener("click", openNewSubmission);
 document.querySelectorAll("[data-close]").forEach((b) =>
   b.addEventListener("click", () => b.closest("dialog").close())
 );
 
 $("add-rule").addEventListener("click", addRuleRow);
 
-$("new-campaign").addEventListener("click", () => {
+function openNewCampaign() {
+  if (isDemoVisitor()) {
+    openLogin(
+      "Log in to create a campaign and save its requirements in your private workspace.",
+      "campaign"
+    );
+    return;
+  }
   $("rule-rows").innerHTML = "";
   addRuleRow();
   $("campaign-error").hidden = true;
   $("campaign-dialog").showModal();
-});
+}
+
+$("new-campaign").addEventListener("click", openNewCampaign);
 
 $("campaign-form").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -813,7 +863,11 @@ $("campaign-form").addEventListener("submit", async (e) => {
   err.hidden = true;
   $("campaign-dialog").close();
   e.target.reset();
-  loadCampaigns();
+  await loadCampaigns();
+  if (continueToSubmission) {
+    continueToSubmission = false;
+    openNewSubmission();
+  }
 });
 
 $("submission-form").addEventListener("submit", async (e) => {
@@ -845,7 +899,10 @@ $("submission-form").addEventListener("submit", async (e) => {
       credentials: "same-origin",
       body: form,
     });
-    if (res.status === 401) { showLogin(); return; }
+    if (res.status === 401) {
+      openLogin("Your session expired. Log in again to add this submission.", "submission");
+      return;
+    }
   } else {
     res = await api("/api/submissions", {
       method: "POST",
@@ -1157,58 +1214,78 @@ $("login-form").addEventListener("submit", async (e) => {
     }),
   });
   if (!res.ok) {
-    showLogin("Email or password is incorrect.");
+    const err = $("login-error");
+    err.textContent = "Email or password is incorrect.";
+    err.hidden = false;
     return;
   }
+  const intent = pendingAuthIntent;
+  pendingAuthIntent = null;
   $("login-password").value = "";
-  boot();
+  $("login-dialog").close();
+  await boot();
+  if (intent === "campaign") openNewCampaign();
+  if (intent === "submission") openNewSubmission();
 });
 
-$("logout").addEventListener("click", async () => {
+$("login-cancel").addEventListener("click", () => {
+  pendingAuthIntent = null;
+  $("login-dialog").close();
+});
+$("login-dialog").addEventListener("close", () => {
+  pendingAuthIntent = null;
+});
+
+$("auth-action").addEventListener("click", async () => {
+  if (isDemoVisitor()) {
+    openLogin("Log in to access your private campaigns, submissions, and review history.");
+    return;
+  }
   await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" });
   currentUser = null;
-  showLogin();
+  currentWorkspaces = [];
+  campaigns = [];
+  await boot();
 });
 
 async function boot() {
   let me;
   try {
     let res = await fetch("/api/auth/me", { credentials: "same-origin" });
-    if (!res.ok && new URLSearchParams(location.search).get("demo") === "1") {
-      res = await fetch("/api/auth/demo", {
-        method: "POST",
-        credentials: "same-origin",
-      });
-      if (res.ok) {
-        history.replaceState({}, "", "/app");
+    if (!res.ok) {
+      if (await establishDemoSession()) {
         res = await fetch("/api/auth/me", { credentials: "same-origin" });
       }
     }
     if (!res.ok) {
-      showLogin();
+      showApp();
+      openLogin("The public showcase is temporarily unavailable. Log in to access your workspace.");
       return;
     }
     me = await res.json();
   } catch {
-    showLogin();
+    showApp();
+    openLogin("The public showcase is temporarily unavailable. Log in to access your workspace.");
     return;
   }
+  if (location.search) history.replaceState({}, "", "/app");
   currentUser = me.user;
   currentWorkspaces = me.workspaces;
   const showcase = currentWorkspaces.find((w) => w.is_showcase);
-  const sandbox = currentWorkspaces.find((w) => w.can_submit && !w.is_showcase);
-  $("who").textContent = me.user.name || me.user.email;
-  if (showcase && sandbox) {
+  if (isDemoVisitor()) {
+    $("who").textContent = "Viewing public demo";
+    $("auth-action").textContent = "Log in";
     $("workspace-banner-copy").textContent =
-      "Open the shared showcase to present completed evidence immediately, or use your isolated live sandbox to create a campaign and process a new URL.";
+      "Explore completed evidence immediately. When you want to create a campaign or add a submission, log in and continue on this same page.";
+    $("workspace-capability").textContent = "Log in to create";
     $("workspace-banner").hidden = false;
   } else {
-    $("workspace-banner").hidden = true;
+    $("who").textContent = me.user.name || me.user.email;
+    $("auth-action").textContent = "Sign out";
+    $("workspace-banner").hidden = !showcase;
   }
   showApp();
-  loadIntegrity();
-  loadCampaigns();
-  loadSubmissions();
+  await Promise.all([loadIntegrity(), loadCampaigns(), loadSubmissions()]);
 }
 
 boot();

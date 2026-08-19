@@ -8,28 +8,34 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="/static/styles.css?v=15" />
+<link rel="stylesheet" href="/static/styles.css?v=16" />
 </head>
 <body>
 
-<!-- ── login ────────────────────────────────────────────────────────────── -->
-<div id="login-view" class="login-view" hidden>
+<!-- Login is an in-context escalation from the public showcase. -->
+<dialog id="login-dialog" class="dialog login-dialog" aria-labelledby="login-title">
   <form id="login-form" class="login-card" autocomplete="on">
     <div class="brand"><span class="brand-mark">▮</span> AdProof</div>
-    <p class="login-sub">Evidence-first campaign verification</p>
+    <h3 id="login-title">Log in to continue</h3>
+    <p id="login-context" class="login-sub">
+      Access your private workspace and continue your campaign work.
+    </p>
     <label for="login-email">Email</label>
     <input id="login-email" type="email" name="email" required autocomplete="username" />
     <label for="login-password">Password</label>
     <input id="login-password" type="password" name="password" required
            autocomplete="current-password" />
-    <button type="submit" class="btn btn-primary btn-block">Sign in</button>
     <p id="login-error" class="alert alert-error" hidden></p>
     <p class="login-note">
       Accounts are provisioned by an administrator. There is no self-service
       signup in this build.
     </p>
+    <div class="dialog-actions">
+      <button id="login-cancel" type="button" class="btn">Continue viewing demo</button>
+      <button type="submit" class="btn btn-primary">Log in</button>
+    </div>
   </form>
-</div>
+</dialog>
 
 <!-- ── app ──────────────────────────────────────────────────────────────── -->
 <div id="app-view" hidden>
@@ -43,7 +49,7 @@
     <div class="topbar-right">
       <span id="integrity-badge" class="badge badge-unknown">checking…</span>
       <span id="who" class="who"></span>
-      <button id="logout" class="btn btn-quiet">Sign out</button>
+      <button id="auth-action" class="btn btn-quiet">Log in</button>
     </div>
   </header>
 
@@ -62,7 +68,7 @@
     </div>
     <div class="workspace-legend">
       <span class="tag tag-showcase">Showcase · read only</span>
-      <span class="tag tag-sandbox">Your sandbox · live</span>
+      <span id="workspace-capability" class="tag tag-sandbox">Log in to create</span>
     </div>
   </section>
 
@@ -279,6 +285,6 @@
 </dialog>
 
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
-<script src="/static/app.js?v=15"></script>
+<script src="/static/app.js?v=16"></script>
 </body>
 </html>

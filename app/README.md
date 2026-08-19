@@ -18,12 +18,14 @@ HLS playback; confirm/override review actions; request-changes, escalation,
 approval and rejection decisions; audit history; revision drafts; and campaign
 analytics.
 
-Public visitors receive two scopes through the same authorization layer:
+Public visitors and authenticated operators use the same application URL:
 
-- `AdProof Client Showcase` — analyst/read-only access to four completed,
-  curated, provider-backed NASA public-domain studies.
-- `Public AdProof test` — an isolated writable sandbox for defining a campaign
-  and processing a durable public video URL.
+- With no account session, `/app` automatically issues a stable guest session
+  with analyst/read-only access to four completed, curated, provider-backed
+  NASA public-domain studies in `AdProof Client Showcase`.
+- Creating a campaign or adding a submission opens login in context. Successful
+  login replaces the guest cookie and resumes the requested action against the
+  operator's persistent private workspace.
 
 The showcase is additive. It does not replace or disable the live workflow.
 

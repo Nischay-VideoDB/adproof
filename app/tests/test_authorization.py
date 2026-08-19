@@ -223,8 +223,10 @@ def test_role_is_enforced_not_just_membership(env):
     assert analyst.get("/api/campaigns").status_code == 200
 
 
-def test_public_demo_gets_read_only_showcase_and_writable_sandbox(env, monkeypatch):
-    """A populated start must not weaken the tenant write boundary."""
+def test_public_demo_is_stable_read_only_and_login_upgrades_session(
+    env, monkeypatch
+):
+    """Guest access is additive and password login replaces its privileges."""
     client, ids = env
     owner = login(client, "a@example.com", PASSWORD_A)
     campaign_id = owner.post(
@@ -233,11 +235,21 @@ def test_public_demo_gets_read_only_showcase_and_writable_sandbox(env, monkeypat
 
     monkeypatch.setenv("ADPROOF_SHOWCASE_WORKSPACE_ID", ids["ws_a"])
     demo = TestClient(client.app)
-    assert demo.post("/api/auth/demo").status_code == 200
+    first = demo.post("/api/auth/demo")
+    assert first.status_code == 200
+    assert first.json()["access"] == "read_only_showcase"
 
-    workspaces = demo.get("/api/auth/me").json()["workspaces"]
-    showcase = next(w for w in workspaces if w["id"] == ids["ws_a"])
-    sandbox = next(w for w in workspaces if w["id"] != ids["ws_a"])
+    # A fresh browser gets the same non-password guest identity rather than a
+    # newly provisioned admin user/workspace.
+    another_demo = TestClient(client.app)
+    second = another_demo.post("/api/auth/demo")
+    assert second.status_code == 200
+    assert second.json()["user"]["id"] == first.json()["user"]["id"]
+
+    profile = demo.get("/api/auth/me").json()
+    assert profile["user"]["is_demo"] is True
+    assert len(profile["workspaces"]) == 1
+    showcase = profile["workspaces"][0]
     assert showcase == {
         "id": ids["ws_a"],
         "name": "Tenant A",
@@ -247,10 +259,6 @@ def test_public_demo_gets_read_only_showcase_and_writable_sandbox(env, monkeypat
         "can_manage_campaigns": False,
         "can_submit": False,
     }
-    assert sandbox["role"] == "workspace_admin"
-    assert sandbox["read_only"] is False
-    assert sandbox["can_manage_campaigns"] is True
-    assert sandbox["can_submit"] is True
 
     campaigns = demo.get("/api/campaigns").json()
     seeded = next(c for c in campaigns if c["id"] == campaign_id)
@@ -268,9 +276,21 @@ def test_public_demo_gets_read_only_showcase_and_writable_sandbox(env, monkeypat
     )
     assert denied.status_code == 403
 
+    # Login overwrites the guest cookie with a newly issued authenticated
+    # session. The same browser can now resume persistent workspace work.
+    authenticated = demo.post(
+        "/api/auth/login",
+        json={"email": "a@example.com", "password": PASSWORD_A},
+    )
+    assert authenticated.status_code == 200
+    upgraded = demo.get("/api/auth/me").json()
+    assert upgraded["user"]["is_demo"] is False
+    assert [w["id"] for w in upgraded["workspaces"]] == [ids["ws_a"]]
+    assert upgraded["workspaces"][0]["can_manage_campaigns"] is True
+
     writable = demo.post(
         "/api/campaigns",
-        json={**CAMPAIGN, "workspace_id": sandbox["id"]},
+        json={**CAMPAIGN, "workspace_id": ids["ws_a"]},
     )
     assert writable.status_code == 201
 
