@@ -171,16 +171,19 @@ def demo_session(
     """
     guest_email = "public-showcase@adproof.invalid"
 
-    # A transaction advisory lock makes first-visitor creation safe across
-    # concurrent serverless cold starts. It is released automatically when the
-    # request transaction commits.
-    if session.bind and session.bind.dialect.name == "postgresql":
-        session.execute(
-            text("SELECT pg_advisory_xact_lock(:namespace, :resource)"),
-            {"namespace": 0x41445052, "resource": 2},
-        )
-
     user = session.scalar(select(User).where(User.email == guest_email))
+    if user is None:
+        # A transaction advisory lock makes first-visitor creation safe across
+        # concurrent serverless cold starts. The second lookup observes a guest
+        # created by whichever request won the lock. Established guests take
+        # the fast path above and never serialize on this lock.
+        if session.bind and session.bind.dialect.name == "postgresql":
+            session.execute(
+                text("SELECT pg_advisory_xact_lock(:namespace, :resource)"),
+                {"namespace": 0x41445052, "resource": 2},
+            )
+            user = session.scalar(select(User).where(User.email == guest_email))
+
     if user is None:
         user = User(
             email=guest_email,
