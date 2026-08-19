@@ -1293,7 +1293,6 @@ def get_report(
                             item.text,
                             run.query if run.search_type == "keyword" else None,
                         ),
-                        "provider_score": item.provider_score,
                         "confidence_band": item.confidence_band,
                         # What the evaluator actually did with this item, not
                         # what the retrieval plan intended. Disclosure frames

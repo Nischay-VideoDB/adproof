@@ -368,6 +368,7 @@ def test_index_failure_yields_honest_per_rule_errors_not_review_ready(client):
         "provider_video_id",
         "provider_collection_id",
         "provider_index_id",
+        "provider_score",
         "provider_stream_url",
         "stream_url",
         "source_url",
