@@ -313,7 +313,7 @@ def test_confirmed_by_is_the_authenticated_user_not_client_supplied(env):
 # -- media proxy -----------------------------------------------------------
 
 
-def test_playback_never_returns_a_provider_url(env):
+def test_playback_never_returns_a_provider_url(env, monkeypatch):
     """The whole point of the proxy: provider URLs must not reach the client."""
     client, ids = env
     a = login(client, "a@example.com", PASSWORD_A)
@@ -355,6 +355,7 @@ def test_playback_never_returns_a_provider_url(env):
             provider_video_id="m-x",
             provider_collection_id="c-x",
             provider_stream_url="https://play.videodb.io/v1/secret-uuid.m3u8",
+            duration_seconds=30.0,
         )
         session.add(asset)
         rule = session.scalar(sa_select(Rule))
@@ -386,16 +387,78 @@ def test_playback_never_returns_a_provider_url(env):
         session.flush()
         evidence_id, asset_id = item.id, asset.id
 
+    provider_calls = []
+
+    def generate(*_args, **_kwargs):
+        provider_calls.append(True)
+        return "https://play.videodb.io/v1/clip-secret.m3u8"
+
+    monkeypatch.setattr(
+        "adproof.api.main.VideoDBAdapter.generate_stream_url", generate
+    )
+
+    # A cross-tenant caller hitting a COLD cache must be rejected before any
+    # provider call or cache write.
+    b = login(client, "b@example.com", PASSWORD_B)
+    assert b.get(f"/api/evidence/{evidence_id}/playback").status_code == 404
+    assert provider_calls == []
+
     body = a.get(f"/api/evidence/{evidence_id}/playback")
     assert body.status_code == 200
     data = body.json()
     assert "play.videodb.io" not in body.text, "provider URL leaked to the client"
     assert data["playback_url"].startswith("/media/")
-    assert data["seek_to_seconds"] == 12.0
+    assert data["detected_start_seconds"] == 12.0
+    assert data["playback_end_seconds"] - data["playback_start_seconds"] == 10.0
+    assert data["marker_start_seconds"] == 5.0
+    assert provider_calls == [True]
 
     # Another tenant must not reach this evidence at all.
-    b = login(client, "b@example.com", PASSWORD_B)
     assert b.get(f"/api/evidence/{evidence_id}/playback").status_code == 404
+
+    # Missing provider duration must retain authorized full-source playback,
+    # while clearly identifying that it is not a bounded clip.
+    with db.session_scope() as session:
+        asset = session.get(MediaAsset, asset_id)
+        asset.duration_seconds = None
+        run = session.scalar(sa_select(RetrievalRun))
+        unknown = EvidenceItem(
+            retrieval_run_id=run.id,
+            media_asset_id=asset.id,
+            origin=EvidenceOrigin.live_provider,
+            role=EvidenceRole.supporting,
+            modality=Modality.spoken,
+            start_seconds=4.0,
+            end_seconds=5.0,
+            confidence_band="high",
+            provider_snapshot={},
+        )
+        session.add(unknown)
+        session.flush()
+        unknown_id = unknown.id
+    fallback = a.get(f"/api/evidence/{unknown_id}/playback")
+    assert fallback.status_code == 200
+    assert fallback.json()["playback_mode"] == "full_source_context"
+    assert fallback.json()["playback_end_seconds"] is None
+
+    with db.session_scope() as session:
+        session.get(MediaAsset, asset_id).duration_seconds = 30.0
+        run = session.scalar(sa_select(RetrievalRun))
+        invalid = EvidenceItem(
+            retrieval_run_id=run.id,
+            media_asset_id=asset_id,
+            origin=EvidenceOrigin.live_provider,
+            role=EvidenceRole.supporting,
+            modality=Modality.spoken,
+            start_seconds=29.0,
+            end_seconds=31.0,
+            confidence_band="high",
+            provider_snapshot={},
+        )
+        session.add(invalid)
+        session.flush()
+        invalid_id = invalid.id
+    assert a.get(f"/api/evidence/{invalid_id}/playback").status_code == 409
 
 
 def test_media_proxy_rejects_a_forged_upstream_url(env):
@@ -430,7 +493,10 @@ def test_media_proxy_rejects_a_forged_upstream_url(env):
     # Correctly SEALED but not on the allowlist: the host check must still bite,
     # proving the allowlist is an independent control and not just decoration.
     evil = "https://evil.example.com/x.ts"
-    res = a.get(f"/media/{token}/segment", params={"u": seal_upstream_url(evil)})
+    res = a.get(
+        f"/media/{token}/segment",
+        params={"u": seal_upstream_url(evil, asset_id)},
+    )
     assert res.status_code == 403
     assert "host is not allowed" in res.json()["detail"].lower()
 
@@ -439,12 +505,124 @@ def test_proxied_manifest_never_exposes_the_provider_url(env):
     """Signed-but-plaintext references still handed the client the real URL."""
     from adproof.security import seal_upstream_url
 
-    sealed = seal_upstream_url("https://play.videodb.io/v1/secret-uuid.m3u8")
+    sealed = seal_upstream_url(
+        "https://play.videodb.io/v1/secret-uuid.m3u8", "asset-safe"
+    )
     assert "videodb" not in sealed
     assert "secret-uuid" not in sealed
+
+
+def test_manifest_rewrites_uri_attributes_without_locator_leaks():
+    from starlette.requests import Request
+
+    from adproof.api.media import _rewrite_manifest
+
+    request = Request(
+        {"type": "http", "scheme": "https", "server": ("adproof.test", 443),
+         "path": "/", "headers": [], "query_string": b""}
+    )
+    upstream = "\n".join(
+        [
+            "#EXTM3U",
+            '#EXT-X-KEY:METHOD=AES-128,URI="https://play.videodb.io/key.bin"',
+            '#EXT-X-MAP:URI="https://play.videodb.io/init.mp4"',
+            "https://play.videodb.io/segment.ts",
+        ]
+    )
+    rewritten = _rewrite_manifest(upstream, request, "token", "asset", "segment")
+    assert "play.videodb.io" not in rewritten
+    assert "key.bin" not in rewritten
+    assert "init.mp4" not in rewritten
+    assert rewritten.count("/media/token/segment?u=") == 3
 
 
 def test_media_proxy_rejects_an_invalid_or_expired_token(env):
     client, _ = env
     a = login(client, "a@example.com", PASSWORD_A)
     assert a.get("/media/not-a-token/master.m3u8").status_code == 403
+
+
+def test_session_and_media_tokens_are_not_interchangeable(env):
+    from adproof.security import (
+        TokenError,
+        issue_media_token,
+        issue_session,
+        read_media_token,
+        read_session,
+    )
+
+    session_token = issue_session("user-1")
+    media_token = issue_media_token("user-1", "asset-1")
+    with pytest.raises(TokenError):
+        read_session(media_token)
+    with pytest.raises(TokenError):
+        read_media_token(session_token)
+
+
+def test_media_token_requires_its_live_authenticated_principal(env):
+    client, _ = env
+    from adproof.security import issue_media_token
+    import adproof.db as db
+    from adproof.models import MediaAsset, User
+    from sqlalchemy import select as sa_select
+
+    with db.session_scope() as session:
+        asset = session.scalar(sa_select(MediaAsset))
+        user_a = session.scalar(sa_select(User).where(User.email == "a@example.com"))
+        token = issue_media_token(user_a.id, asset.id)
+
+    anon = TestClient(client.app)
+    assert anon.get(f"/media/{token}/master.m3u8").status_code == 401
+    wrong_user = login(client, "b@example.com", PASSWORD_B)
+    assert wrong_user.get(f"/media/{token}/master.m3u8").status_code == 403
+
+
+def test_sealed_upstream_reference_is_bound_to_one_asset(env):
+    client, _ = env
+    a = login(client, "a@example.com", PASSWORD_A)
+    from adproof.security import issue_media_token, seal_upstream_url
+    import adproof.db as db
+    from adproof.models import MediaAsset, User
+    from sqlalchemy import select as sa_select
+
+    with db.session_scope() as session:
+        asset = session.scalar(sa_select(MediaAsset))
+        user = session.scalar(sa_select(User).where(User.email == "a@example.com"))
+        token = issue_media_token(user.id, asset.id)
+    sealed_for_another_asset = seal_upstream_url(
+        "https://play.videodb.io/v1/segment.ts", "another-asset"
+    )
+    response = a.get(
+        f"/media/{token}/segment", params={"u": sealed_for_another_asset}
+    )
+    assert response.status_code == 403
+    assert "another asset" in response.json()["detail"].lower()
+
+
+def test_media_access_is_revoked_when_membership_is_removed(env):
+    client, _ = env
+    analyst = login(client, "analyst@example.com", PASSWORD_A)
+    from adproof.security import issue_media_token
+    import adproof.db as db
+    from adproof.models import MediaAsset, Membership, User
+    from adproof.states import Role
+    from sqlalchemy import delete, select as sa_select
+
+    with db.session_scope() as session:
+        asset = session.scalar(sa_select(MediaAsset))
+        user = session.scalar(sa_select(User).where(User.email == "analyst@example.com"))
+        membership = session.scalar(
+            sa_select(Membership).where(Membership.user_id == user.id)
+        )
+        workspace_id = membership.workspace_id
+        token = issue_media_token(user.id, asset.id)
+        session.execute(delete(Membership).where(Membership.id == membership.id))
+
+    assert analyst.get(f"/media/{token}/master.m3u8").status_code == 404
+
+    with db.session_scope() as session:
+        session.add(
+            Membership(
+                user_id=user.id, workspace_id=workspace_id, role=Role.analyst
+            )
+        )

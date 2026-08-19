@@ -78,15 +78,36 @@ a frame every 2 seconds, so cost scales with video length — start short.
 With production credentials exported, run:
 
 ```bash
-./.venv/bin/python scripts/seed_showcase.py --apply --curate
+./.venv/bin/python scripts/seed_showcase.py --apply
 ```
 
-The command is idempotent. It creates the showcase workspace and campaign,
-submits four official NASA direct-MP4 sources through the normal authenticated
-API, runs genuine VideoDB indexing/retrieval/evaluation, then appends the
-curator reviews and final approvals. It never inserts fixture evidence or
-duplicates provider work. Configure `ADPROOF_SHOWCASE_WORKSPACE_ID` to the ID it
-prints.
+The command is idempotent. It creates two curated creator-review campaigns,
+submits the frozen reuse-permitted source files through the normal authenticated
+upload API, and invokes the same durable VideoDB worker used by private
+submissions. The seeder creates only input-side workspace, identity, campaign,
+rule, submission, and source-attribution records. It never constructs evidence,
+retrieval runs, evaluation results, reviews, decisions, timestamps, states, or
+evidence IDs. Curator reviews and decisions are appended separately after the
+real reports and playback are inspected. Configure
+`ADPROOF_SHOWCASE_WORKSPACE_ID` to the fully validated workspace ID it prints.
+
+### Showcase reproducibility boundary
+
+Rule evaluation is deterministic given the same persisted evidence: the pure
+`evaluation/` package has no network or model access. A fresh provider upload or
+re-index is not promised to reproduce the same candidate set, scene boundaries,
+or model verdict because VideoDB and the verdict model may return different
+retrieval candidates. The immutable retrieval receipt records what each run
+actually used; the append-only human review stays separate from the machine
+result.
+
+Two independent Biossance provider runs were compared without rerunning either
+source. Their measured-value vector matched exactly
+`[1, 2, 0, 0, 0, null, 0, null]`; seven of eight final machine states matched.
+The application-event rule was `fail` in the first run and `uncertain` in the
+second as the provider/model candidate layer varied. Evidence counts were 47
+and 46. This is an observed example of the boundary above, not a result tuned by
+the showcase seeder.
 
 `/examples` remains a separate browser-only prepared walkthrough. It is useful
 for explaining outcome shapes, but is explicitly labelled and never presented

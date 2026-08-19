@@ -263,12 +263,15 @@ class VideoDBAdapter:
             ) from exc
 
     def generate_stream_url(
-        self, provider_video_id: str, collection_id: str | None = None
+        self,
+        provider_video_id: str,
+        collection_id: str | None = None,
+        timeline: list[tuple[float, float]] | None = None,
     ) -> str:
-        """Full-video HLS stream, used for seek-to-timestamp playback."""
+        """Generate a full-video or explicitly bounded HLS stream."""
         video = self._get_video(provider_video_id, collection_id)
         try:
-            url = video.generate_stream()
+            url = video.generate_stream(timeline=timeline)
         except RequestTimeoutError as exc:
             raise ProviderTimeout(
                 "VideoDB stream generation exceeded the SDK polling budget.", str(exc)

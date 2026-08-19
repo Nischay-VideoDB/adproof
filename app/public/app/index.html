@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="/static/styles.css?v=16" />
+  <link rel="stylesheet" href="/static/styles.css?v=19" />
 </head>
 <body>
 
@@ -42,12 +42,11 @@
   <header class="topbar">
     <div class="brand"><span class="brand-mark">▮</span> AdProof</div>
     <nav class="tabs">
-      <button class="tab active" data-view="review">Review queue</button>
-      <button class="tab" data-view="campaigns">Campaigns</button>
+      <button class="tab active" role="tab" aria-selected="true" data-view="campaigns">Campaigns</button>
+      <button class="tab" role="tab" aria-selected="false" data-view="review">Submission review</button>
       <button class="tab" data-view="analytics">Analytics</button>
     </nav>
     <div class="topbar-right">
-      <span id="integrity-badge" class="badge badge-unknown">checking…</span>
       <span id="who" class="who"></span>
       <button id="auth-action" class="btn btn-quiet">Log in</button>
     </div>
@@ -62,8 +61,8 @@
 
   <section id="workspace-banner" class="workspace-banner" hidden>
     <div>
-      <span class="eyebrow">Client-ready starting point</span>
-      <strong>Provider-backed reviews are ready to explore.</strong>
+      <span class="eyebrow">Evidence-backed creator review</span>
+      <strong>Verify every submission against the campaign brief.</strong>
       <p id="workspace-banner-copy"></p>
     </div>
     <div class="workspace-legend">
@@ -72,12 +71,34 @@
     </div>
   </section>
 
+  <!-- campaigns -->
+  <main id="view-campaigns" class="view view-campaigns">
+    <section class="campaign-intro">
+      <div>
+        <span class="eyebrow">Campaign brief → exact video evidence</span>
+        <h1>Know what passed, what needs changes, and the moment behind it.</h1>
+        <p>AdProof turns human-confirmed campaign requirements into a review workspace for every creator submission. The machine gathers proof; a person owns the decision.</p>
+      </div>
+      <button id="new-campaign" class="btn btn-primary">New campaign</button>
+    </section>
+    <section class="campaign-browser">
+      <div class="campaign-picker">
+        <div class="section-heading"><div><span class="eyebrow">Campaigns</span><h2>Choose a campaign</h2></div></div>
+        <ul id="campaign-list" class="campaign-list"></ul>
+        <p id="campaigns-empty" class="empty" hidden>No campaigns yet. Create one and confirm its requirements before adding submissions.</p>
+      </div>
+      <div id="campaign-dashboard" class="campaign-dashboard">
+        <p class="empty placeholder">Select a campaign to see its brief, confirmed requirements, and creator review matrix.</p>
+      </div>
+    </section>
+  </main>
+
   <!-- review -->
-  <main id="view-review" class="view">
+  <main id="view-review" class="view" hidden>
     <section class="panel sidebar">
       <div class="panel-head">
-        <h2>Submissions</h2>
-        <button id="new-submission" class="btn btn-small">+ New</button>
+        <div><span class="eyebrow">Review queue</span><h2>Submissions</h2></div>
+        <button id="new-submission" class="btn btn-small">New submission</button>
       </div>
       <ul id="submission-list" class="submission-list"></ul>
       <p id="submissions-empty" class="empty" hidden>
@@ -88,11 +109,11 @@
 
     <section class="panel" id="report-panel">
       <p id="report-placeholder" class="empty placeholder">
-        Select a submission to see its requirements, evidence, and processing state.
+        Select a submission to review each requirement beside its exact evidence.
       </p>
 
       <div id="report-body" hidden>
-        <div class="report-header">
+        <div class="report-header report-hero">
           <div>
             <h2 id="report-title">Submission</h2>
             <p id="report-sub" class="muted"></p>
@@ -104,23 +125,31 @@
 
         <div id="submission-error" class="alert alert-error" hidden></div>
 
-        <h3>Processing</h3>
-        <p class="note">
-          Stage state is AdProof's own job state. VideoDB exposes no
-          index-progress signal to this SDK version, so no percentage is shown.
-        </p>
-        <ul id="stages" class="stages"></ul>
+        <div class="review-workspace">
+          <aside class="requirement-rail">
+            <div class="section-heading"><div><span class="eyebrow">Confirmed brief</span><h3>Requirements</h3></div></div>
+            <div id="rules"></div>
+          </aside>
+          <section id="requirement-detail" class="requirement-detail"></section>
+          <aside id="evidence-workspace" class="evidence-workspace">
+            <span class="eyebrow">Evidence for this requirement</span>
+            <h3 id="evidence-title">Select a requirement</h3>
+            <video id="player" controls playsinline preload="metadata"></video>
+            <div id="detection-marker" class="detection-marker" hidden><span></span></div>
+            <p id="player-note" class="note">Choose a requirement to inspect its exact supporting moment.</p>
+            <div id="evidence-list"></div>
+          </aside>
+        </div>
 
-        <h3>Media</h3>
-        <div id="media-info" class="media-info"></div>
-        <video id="player" controls playsinline preload="metadata"></video>
-        <p id="player-note" class="note"></p>
+        <section class="decision-section"><div class="section-heading"><div><span class="eyebrow">Human decision</span><h3>Review outcome</h3></div></div><div id="adjudication-slot"></div></section>
 
-        <h3>Decision</h3>
-        <div id="adjudication-slot"></div>
-
-        <h3>Requirements</h3>
-        <div id="rules"></div>
+        <details class="secondary-disclosure">
+          <summary>Processing and audit details</summary>
+          <div id="media-info" class="media-info"></div>
+          <button id="full-source-btn" class="btn btn-small" type="button">Open full source</button>
+          <ul id="stages" class="stages"></ul>
+          <div id="audit-list"></div>
+        </details>
       </div>
     </section>
   </main>
@@ -136,43 +165,14 @@
     </section>
   </main>
 
-  <!-- campaigns -->
-  <main id="view-campaigns" class="view" hidden>
-    <section class="panel sidebar">
-      <div class="panel-head">
-        <h2>Campaigns</h2>
-        <button id="new-campaign" class="btn btn-small">+ New</button>
-      </div>
-      <ul id="campaign-list" class="submission-list"></ul>
-      <p id="campaigns-empty" class="empty" hidden>
-        No campaigns yet. A campaign holds the confirmed requirements that
-        submissions are verified against.
-      </p>
-    </section>
-    <section class="panel">
-      <h2>How verification works</h2>
-      <ol class="how">
-        <li><strong>Define requirements.</strong> Each becomes a structured rule with an explicit threshold and absence policy.</li>
-        <li><strong>Confirm the rule set.</strong> Rules are immutable once confirmed, and every result cites the version used.</li>
-        <li><strong>Submit a video.</strong> AdProof ingests it, builds a spoken index and one focused visual index per visual rule.</li>
-        <li><strong>Retrieve evidence.</strong> Each rule runs versioned searches for supporting <em>and</em> conflicting moments.</li>
-        <li><strong>Measure deterministically.</strong> Durations, counts, and thresholds are computed in code — never by a language model.</li>
-        <li><strong>Review.</strong> Open any finding at its exact timestamp, with full provenance.</li>
-      </ol>
-      <p class="note">
-        Nine rule types are implemented. Required spoken phrase and minimum
-        visual duration are field-validated against real media; the other
-        types remain explicitly labelled as implemented but not yet
-        field-validated. Subjective requirements always route to a person.
-      </p>
-    </section>
-  </main>
 </div>
 
 <!-- ── modals ───────────────────────────────────────────────────────────── -->
 <dialog id="campaign-dialog" class="dialog dialog-wide">
   <form id="campaign-form" method="dialog">
-    <h3>New campaign</h3>
+    <span class="eyebrow">Step 1 of 2</span>
+    <h3>Create a campaign and confirm its rules</h3>
+    <p class="note">Paste the agreed brief, then author the measurable checks below. AdProof does not infer obligations from the brief in this build; you confirm every active requirement.</p>
     <label>Campaign name<input name="campaign_name" required /></label>
     <label>Campaign brief (kept verbatim as an audit artifact)
       <textarea name="brief_text" rows="3" required></textarea></label>
@@ -285,6 +285,6 @@
 </dialog>
 
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
-<script src="/static/app.js?v=16"></script>
+  <script src="/static/app.js?v=19"></script>
 </body>
 </html>

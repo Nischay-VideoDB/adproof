@@ -5,6 +5,7 @@ provider failure must produce visible errors, never a plausible report.
 """
 
 import os
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -14,6 +15,43 @@ TEST_DB = os.getenv("ADPROOF_TEST_DATABASE_URL", "postgresql+psycopg:///adproof_
 
 
 PASSWORD = "test-password-1234"
+
+
+def test_clip_window_boundaries_preserve_the_canonical_interval():
+    from adproof.api.main import _clip_window
+
+    assert _clip_window(0.0, 2.0, 6.0) == (0.0, 6.0)
+    assert _clip_window(18.0, 20.0, 20.0) == (10.0, 20.0)
+    assert _clip_window(3.0, 15.0, 20.0) == (3.0, 15.0)
+
+
+def test_evidence_dedupe_requires_temporal_and_semantic_identity():
+    from adproof.api.main import _dedupe_evidence
+
+    def item(item_id, start, *, role="supporting", kind="proof"):
+        return {
+            "id": item_id, "modality": "spoken", "role": role,
+            "evidence_kind": kind, "qualification": "qualifies",
+            "text": "same exact phrase", "start_seconds": start,
+            "end_seconds": start + 2, "counted_toward_measurement": True,
+            "provenance": {"retrieval_run_id": "run-1"},
+        }
+
+    assert len(_dedupe_evidence([item("a", 0), item("b", 30)])) == 2
+    assert len(_dedupe_evidence([item("a", 0), item("b", 0.1, role="conflicting", kind="issue")])) == 2
+
+
+def test_window_and_duration_projection_only_marks_measured_receipts():
+    from adproof.api.main import _is_measured_evidence
+    from adproof.states import RuleType
+
+    result = SimpleNamespace(evidence_ids=["inside", "outside"], measurement_intervals=[[1.0, 2.0]], measured_value=1.0)
+    rule = SimpleNamespace(rule_type=RuleType.required_visual_event, window_start_seconds=0.0, window_end_seconds=8.0)
+    assert _is_measured_evidence(rule, result, SimpleNamespace(id="inside", start_seconds=1.0, end_seconds=2.0))
+    assert not _is_measured_evidence(rule, result, SimpleNamespace(id="outside", start_seconds=20.0, end_seconds=21.0))
+
+    duration_rule = SimpleNamespace(rule_type=RuleType.min_visual_duration, window_start_seconds=None, window_end_seconds=None)
+    assert not _is_measured_evidence(duration_rule, result, SimpleNamespace(id="inside", start_seconds=1.0, end_seconds=None))
 
 
 @pytest.fixture(scope="module")
@@ -320,7 +358,30 @@ def test_index_failure_yields_honest_per_rule_errors_not_review_ready(client):
     report = client.get(f"/api/submissions/{submission_id}/report").json()
 
     assert report["submission"]["state"] != "ready_for_review"
-    assert report["media"]["provider_video_id"] == "m-idxfail"
+    assert report["media"]["playable"] is True
+    assert "provider_video_id" not in report["media"]
+    assert "m-idxfail" not in str(report)
+    serialized = str(report)
+    assert "https://example.invalid/v.mp4" not in serialized
+    assert "https://stream.example/v.m3u8" not in serialized
+    forbidden_keys = {
+        "provider_video_id",
+        "provider_collection_id",
+        "provider_index_id",
+        "provider_stream_url",
+        "stream_url",
+        "source_url",
+        "sdk_version",
+    }
+
+    def keys(value):
+        if isinstance(value, dict):
+            return set(value) | set().union(*(keys(v) for v in value.values()), set())
+        if isinstance(value, list):
+            return set().union(*(keys(v) for v in value), set())
+        return set()
+
+    assert not (keys(report) & forbidden_keys)
 
     for rule in report["rules"]:
         result = rule["result"]

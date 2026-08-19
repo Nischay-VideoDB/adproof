@@ -642,6 +642,12 @@ def evaluate_sequence(
                 f"'{missing}', so the ordering cannot be checked. "
                 f"An unfound event is not a proven absent one."
             ),
+            # Preserve the component that was actually found as a linked
+            # receipt. It does not satisfy the sequence by itself, but lets the
+            # client distinguish one missing required part from no evidence.
+            evidence_ids=[
+                e.evidence_id for e in first_evidence + second_evidence
+            ],
         )
 
     earliest_first = min(e.start_seconds for e in first_evidence)

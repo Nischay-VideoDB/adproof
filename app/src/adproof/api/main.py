@@ -9,6 +9,8 @@ is stated in /api/integrity rather than stubbed.
 from __future__ import annotations
 
 import os
+import re
+from datetime import timedelta
 import uuid
 from pathlib import Path
 from typing import Any, Literal
@@ -29,6 +31,7 @@ from ..orchestrator.worker import run_version_until_idle
 from .auth import (
     Principal,
     authorized_campaign,
+    authorized_media_asset,
     authorized_submission,
     authorize_workspace,
     clear_session_cookie,
@@ -41,15 +44,18 @@ from ..evaluation.confidence import derivation_note
 from ..evaluation.evaluators import _declares_disclosure
 from ..models import (
     Campaign,
+    BriefVersion,
     Membership,
     EvaluationResult,
     EvidenceItem,
+    EvidencePlaybackWindow,
     MediaAsset,
     RetrievalRun,
     Rule,
     RuleReview,
     RuleSetVersion,
     Submission,
+    ShowcaseSourceAttribution,
     SubmissionDecision,
     SubmissionVersion,
     User,
@@ -62,6 +68,8 @@ from ..analytics import compute as analytics_compute
 from ..policy import RuleView, adjudicate, state_after
 from ..revisions import EvidenceRef, RuleFacts, draft_revisions
 from ..orchestrator.steps import dedupe_key
+from ..providers.errors import ProviderError
+from ..providers.videodb_adapter import VideoDBAdapter
 from ..states import (
     CAN_DECIDE_FINAL,
     CAN_MANAGE_CAMPAIGNS,
@@ -106,6 +114,146 @@ app = FastAPI(
 
 
 app.include_router(media_router)
+
+
+_PRIVATE_DETAIL_KEYS = frozenset(
+    {
+        "source_url",
+        "source_file_path",
+        "provider_reference",
+        "provider_video_id",
+        "provider_collection_id",
+        "provider_index_id",
+        "provider_index_name",
+        "provider_stream_url",
+        "provider_player_url",
+        "stream_url",
+        "player_url",
+        "sdk_version",
+    }
+)
+_PRIVATE_TEXT = re.compile(
+    r"https?://\S+|\b(?:m|c)-[A-Za-z0-9_-]{4,}\b|\bplay\.videodb\.io\S*",
+    re.IGNORECASE,
+)
+
+
+def _client_safe_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return _PRIVATE_TEXT.sub("[private reference]", value)
+
+
+def _client_safe_detail(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _client_safe_detail(item)
+            for key, item in value.items()
+            if key not in _PRIVATE_DETAIL_KEYS
+        }
+    if isinstance(value, list):
+        return [_client_safe_detail(item) for item in value]
+    if isinstance(value, str):
+        return _client_safe_text(value)
+    return value
+
+
+def _compact_excerpt(text: str | None, phrase: str | None = None) -> str | None:
+    """Return a useful evidence excerpt instead of a provider-sized block."""
+    if not text:
+        return text
+    collapsed = " ".join(text.split())
+    if len(collapsed) <= 420:
+        return collapsed
+    if phrase:
+        at = collapsed.lower().find(phrase.lower())
+        if at >= 0:
+            start = max(0, at - 140)
+            end = min(len(collapsed), at + len(phrase) + 180)
+            prefix = "…" if start else ""
+            suffix = "…" if end < len(collapsed) else ""
+            return prefix + collapsed[start:end] + suffix
+    return collapsed[:417].rstrip() + "…"
+
+
+def _interval_duplicate(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    if left["id"] == right["id"]:
+        return True
+    if (
+        left["modality"] != right["modality"]
+        or left["role"] != right["role"]
+        or left["evidence_kind"] != right["evidence_kind"]
+        or left.get("qualification") != right.get("qualification")
+        or left.get("text") != right.get("text")
+        or left.get("provenance", {}).get("retrieval_run_id")
+        != right.get("provenance", {}).get("retrieval_run_id")
+    ):
+        return False
+    left_end = left["end_seconds"] or left["start_seconds"]
+    right_end = right["end_seconds"] or right["start_seconds"]
+    intersection = max(
+        0.0,
+        min(left_end, right_end) - max(left["start_seconds"], right["start_seconds"]),
+    )
+    shorter = min(
+        max(0.01, left_end - left["start_seconds"]),
+        max(0.01, right_end - right["start_seconds"]),
+    )
+    near_same_interval = (
+        abs(left["start_seconds"] - right["start_seconds"]) <= 0.25
+        and abs(left_end - right_end) <= 0.25
+    )
+    return intersection / shorter >= 0.7 or near_same_interval
+
+
+def _dedupe_evidence(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    ordered = sorted(
+        items,
+        key=lambda item: (
+            item["evidence_kind"] not in ("proof", "issue"),
+            not item["counted_toward_measurement"],
+            item["start_seconds"],
+            (item["end_seconds"] or item["start_seconds"])
+            - item["start_seconds"],
+        ),
+    )
+    kept: list[dict[str, Any]] = []
+    for item in ordered:
+        if any(_interval_duplicate(item, prior) for prior in kept):
+            continue
+        kept.append(item)
+    return sorted(kept, key=lambda item: item["start_seconds"])
+
+
+def _is_measured_evidence(
+    rule: Rule, result: EvaluationResult | None, item: EvidenceItem
+) -> bool:
+    """Project evaluator-admitted measurement membership without drift."""
+    if result is None or item.id not in set(result.evidence_ids or []):
+        return False
+    # Sequence and disclosure results link the admitted component receipts but
+    # do not persist a merged duration interval.
+    if rule.rule_type in (RuleType.sequence, RuleType.disclosure_present):
+        if rule.rule_type is RuleType.sequence and result.measured_value is None:
+            return False
+        return True
+    if rule.rule_type in (RuleType.min_visual_duration, RuleType.max_visual_duration):
+        return item.end_seconds is not None and result.measured_value is not None
+    # A required event with a placement window may link candidates outside the
+    # window so reviewers can see why it failed. Only intervals admitted into
+    # the immutable measurement are measured proof.
+    if rule.rule_type is RuleType.required_visual_event and (
+        rule.window_start_seconds is not None or rule.window_end_seconds is not None
+    ):
+        start = item.start_seconds
+        end = item.end_seconds if item.end_seconds is not None else start
+        for measured_start, measured_end in result.measurement_intervals or []:
+            if (start <= measured_end and end >= measured_start) or (
+                start == end and measured_start <= start <= measured_end
+            ):
+                return True
+        return False
+    return True
 
 
 @app.on_event("startup")
@@ -589,6 +737,153 @@ def list_campaigns(
     return out
 
 
+@app.get("/api/campaigns/{campaign_id}/dashboard")
+def campaign_dashboard(
+    campaign_id: str,
+    principal: Principal = Depends(current_principal),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Compact campaign, requirement, and submission matrix projection."""
+    campaign = authorized_campaign(session, principal, campaign_id, CAN_READ)
+    brief = session.scalar(
+        select(BriefVersion)
+        .where(BriefVersion.campaign_id == campaign.id)
+        .order_by(BriefVersion.version.desc())
+        .limit(1)
+    )
+    rule_set = session.scalar(
+        select(RuleSetVersion)
+        .where(RuleSetVersion.campaign_id == campaign.id)
+        .order_by(RuleSetVersion.version.desc())
+        .limit(1)
+    )
+    rules = list(
+        session.scalars(
+            select(Rule)
+            .where(Rule.rule_set_version_id == rule_set.id)
+            .order_by(Rule.ordinal)
+        )
+    ) if rule_set else []
+    submissions = list(
+        session.scalars(
+            select(Submission)
+            .where(Submission.campaign_id == campaign.id)
+            .order_by(Submission.created_at.desc())
+        )
+    )
+    rows = []
+    for submission in submissions:
+        version = _latest_version(session, submission)
+        cells = []
+        unresolved = 0
+        for rule in rules:
+            result = session.scalar(
+                select(EvaluationResult).where(
+                    EvaluationResult.submission_version_id == version.id,
+                    EvaluationResult.rule_id == rule.id,
+                )
+            )
+            review = session.scalar(
+                select(RuleReview)
+                .where(
+                    RuleReview.submission_version_id == version.id,
+                    RuleReview.rule_id == rule.id,
+                )
+                .order_by(RuleReview.created_at.desc())
+                .limit(1)
+            )
+            machine_state = result.state if result else RuleResultState.processing
+            effective_state = review.human_state if review else machine_state
+            if effective_state in (
+                RuleResultState.uncertain,
+                RuleResultState.human_review_required,
+                RuleResultState.processing,
+                RuleResultState.error,
+                RuleResultState.not_evaluated,
+            ):
+                unresolved += 1
+            evidence_ids = result.evidence_ids or [] if result else []
+            cells.append(
+                {
+                    "rule_id": rule.id,
+                    "machine_state": machine_state,
+                    "human_state": review.human_state if review else None,
+                    "effective_state": effective_state,
+                    "reviewed": review is not None,
+                    "evidence_id": evidence_ids[0] if evidence_ids else None,
+                }
+            )
+        decision = session.scalar(
+            select(SubmissionDecision)
+            .where(SubmissionDecision.submission_version_id == version.id)
+            .order_by(SubmissionDecision.created_at.desc())
+            .limit(1)
+        )
+        attribution = session.scalar(
+            select(ShowcaseSourceAttribution).where(
+                ShowcaseSourceAttribution.submission_id == submission.id
+            )
+        )
+        rows.append(
+            {
+                "submission_id": submission.id,
+                "creator_reference": submission.creator_reference,
+                "state": submission.state,
+                "version": version.version,
+                "unresolved_count": unresolved,
+                "final_decision": decision.decision if decision else None,
+                "source_attribution": (
+                    {
+                        "title": attribution.title,
+                        "author": attribution.author,
+                        "source_page_url": attribution.source_page_url,
+                        "license_name": attribution.license_name,
+                        "license_url": attribution.license_url,
+                    }
+                    if attribution
+                    else None
+                ),
+                "cells": cells,
+            }
+        )
+
+    state_counts: dict[str, int] = {}
+    for row in rows:
+        key = row["state"].value
+        state_counts[key] = state_counts.get(key, 0) + 1
+    return {
+        "campaign": {
+            "id": campaign.id,
+            "name": campaign.name,
+            "brief": brief.original_text if brief else None,
+            "brief_version": brief.version if brief else None,
+            "confirmed_at": rule_set.confirmed_at.isoformat()
+            if rule_set and rule_set.confirmed_at
+            else None,
+            "confirmed_by": rule_set.confirmed_by if rule_set else None,
+            "read_only": principal.role_in(campaign.workspace_id) not in CAN_SUBMIT,
+            "is_showcase": campaign.workspace_id
+            == os.getenv("ADPROOF_SHOWCASE_WORKSPACE_ID"),
+        },
+        "requirements": [
+            {
+                "id": rule.id,
+                "ordinal": rule.ordinal,
+                "requirement_text": rule.requirement_text,
+                "rule_type": rule.rule_type,
+                "severity": rule.severity,
+            }
+            for rule in rules
+        ],
+        "summary": {
+            "submission_count": len(rows),
+            "state_counts": state_counts,
+            "unresolved_count": sum(row["unresolved_count"] for row in rows),
+        },
+        "submissions": rows,
+    }
+
+
 # --------------------------------------------------------------------------
 # submissions
 # --------------------------------------------------------------------------
@@ -865,8 +1160,7 @@ def _stage_view(job) -> dict[str, Any]:
         "attempt_count": job.attempt_count,
         "max_attempts": job.max_attempts,
         "elapsed_seconds": job.elapsed_seconds,
-        "provider_reference": job.provider_reference,
-        "error_summary": job.error_summary,
+        "error_summary": _client_safe_text(job.error_summary),
         "retryable": job.state == JobState.failed_retryable,
         "terminal": job.state in (JobState.succeeded, JobState.failed_terminal),
     }
@@ -881,6 +1175,13 @@ def get_report(
     submission = authorized_submission(session, principal, submission_id, CAN_READ)
     role = principal.role_in(submission.workspace_id)
     workspace = session.get(Workspace, submission.workspace_id)
+    campaign = session.get(Campaign, submission.campaign_id)
+    brief = session.scalar(
+        select(BriefVersion)
+        .where(BriefVersion.campaign_id == submission.campaign_id)
+        .order_by(BriefVersion.version.desc())
+        .limit(1)
+    )
 
     version = session.scalar(
         select(SubmissionVersion)
@@ -893,6 +1194,11 @@ def get_report(
 
     asset = session.scalar(
         select(MediaAsset).where(MediaAsset.submission_version_id == version.id)
+    )
+    attribution = session.scalar(
+        select(ShowcaseSourceAttribution).where(
+            ShowcaseSourceAttribution.submission_id == submission.id
+        )
     )
     stages = [_stage_view(j) for j in jobs_for_version(session, version.id)]
     all_settled = bool(stages) and all(s["terminal"] for s in stages)
@@ -923,15 +1229,14 @@ def get_report(
         )
         run_views = []
         evidence_views = []
+        result_evidence_ids = set(result.evidence_ids or []) if result else set()
         for run in runs:
-            run_views.append(
-                {
+            run_view = {
                     "id": run.id,
                     "plan_version": run.plan_version,
                     "query": run.query,
                     "search_type": run.search_type,
                     "index_type": run.index_type,
-                    "provider_index_id": run.provider_index_id,
                     "role": run.role,
                     "counts_toward_measurement": run.counts_toward_measurement,
                     # null means "did not run"; 0 means "ran and found nothing".
@@ -941,14 +1246,41 @@ def get_report(
                     #: understates the truth.
                     "result_truncated": run.result_truncated,
                     "executed": run.error_summary is None and run.finished_at is not None,
-                    "error_summary": run.error_summary,
+                    "error_summary": _client_safe_text(run.error_summary),
+                    "slot": (run.request_params or {}).get("slot", "primary"),
+                    "accepted_count": 0,
+                    "linked_count": 0,
                 }
-            )
+            run_views.append(run_view)
             for item in session.scalars(
                 select(EvidenceItem)
                 .where(EvidenceItem.retrieval_run_id == run.id)
                 .order_by(EvidenceItem.start_seconds)
             ):
+                # Once evaluation exists, its immutable evidence membership is
+                # authoritative. Reimplementing evaluator filters here causes
+                # projection drift (notably for visual action qualification).
+                # Before evaluation, retrieved candidates remain context.
+                counted_toward_measurement = _is_measured_evidence(
+                    rule, result, item
+                )
+                if counted_toward_measurement:
+                    run_view["accepted_count"] += 1
+                if item.id in result_evidence_ids:
+                    run_view["linked_count"] += 1
+                if counted_toward_measurement:
+                    evidence_kind = (
+                        "issue"
+                        if rule.rule_type
+                        in (
+                            RuleType.forbidden_spoken_claim,
+                            RuleType.forbidden_visual_event,
+                            RuleType.max_visual_duration,
+                        )
+                        else "proof"
+                    )
+                else:
+                    evidence_kind = "context"
                 evidence_views.append(
                     {
                         "id": item.id,
@@ -957,22 +1289,18 @@ def get_report(
                         "origin": item.origin,
                         "start_seconds": item.start_seconds,
                         "end_seconds": item.end_seconds,
-                        "text": item.text,
+                        "text": _compact_excerpt(
+                            item.text,
+                            run.query if run.search_type == "keyword" else None,
+                        ),
                         "provider_score": item.provider_score,
                         "confidence_band": item.confidence_band,
                         # What the evaluator actually did with this item, not
                         # what the retrieval plan intended. Disclosure frames
                         # count only when their own marker declares a
                         # disclosure; qualified-out evidence never counts.
-                        "counted_toward_measurement": (
-                            run.counts_toward_measurement
-                            and item.qualification not in ("contradicts", "unsure")
-                            and not (
-                                rule.rule_type is RuleType.disclosure_present
-                                and run.index_type == "scene"
-                                and not _declares_disclosure(item.text)
-                            )
-                        ),
+                        "counted_toward_measurement": counted_toward_measurement,
+                        "evidence_kind": evidence_kind,
                         "qualification": item.qualification,
                         "attests_absence": bool(
                             rule.rule_type is RuleType.disclosure_present
@@ -981,20 +1309,107 @@ def get_report(
                         ),
                         "provenance": {
                             "retrieval_run_id": run.id,
-                            "retrieval_query": run.query,
                             "search_type": run.search_type,
                             "index_type": run.index_type,
                             "plan_version": run.plan_version,
-                            "provider_index_id": item.provider_index_id,
-                            "provider_index_name": item.provider_index_name,
-                            "provider_video_id": asset.provider_video_id
-                            if asset
-                            else None,
-                            "sdk_version": asset.sdk_version if asset else None,
                             "created_at": item.created_at.isoformat(),
                         },
                     }
                 )
+
+        evidence_views = _dedupe_evidence(evidence_views)
+        counting_runs = [run for run in run_views if run["counts_toward_measurement"]]
+        no_hit_receipt = None
+        receipts = []
+        for counting_run in counting_runs:
+            if not counting_run["executed"]:
+                receipt_state = "not_executed"
+            elif counting_run["result_truncated"]:
+                receipt_state = "coverage_incomplete"
+            elif counting_run["result_count"] == 0:
+                receipt_state = "no_candidates"
+            elif counting_run["accepted_count"] == 0:
+                receipt_state = (
+                    "component_found"
+                    if rule.rule_type is RuleType.sequence
+                    and counting_run["linked_count"] > 0
+                    else "no_qualifying_match"
+                )
+            else:
+                receipt_state = "evidence_found"
+            receipts.append(
+                {
+                    "slot": counting_run["slot"],
+                    "state": receipt_state,
+                    "candidate_count": counting_run["result_count"],
+                    "accepted_count": counting_run["accepted_count"],
+                    "linked_count": counting_run["linked_count"],
+                }
+            )
+        nonmatching_slots = [
+            receipt["slot"]
+            for receipt in receipts
+            if receipt["state"] not in ("evidence_found", "component_found")
+        ]
+        found_any = any(
+            receipt["state"] in ("evidence_found", "component_found")
+            for receipt in receipts
+        )
+        disclosure_mode = (
+            rule.modality_requirement.value if rule.modality_requirement else None
+        )
+        if rule.rule_type is RuleType.sequence or (
+            rule.rule_type is RuleType.disclosure_present
+            and disclosure_mode == "both"
+        ):
+            missing_slots = nonmatching_slots
+        elif rule.rule_type in (
+            RuleType.disclosure_present,
+            RuleType.forbidden_spoken_claim,
+        ) and found_any:
+            # "Either" disclosure needs one modality. Forbidden-phrase slots
+            # are alternatives to avoid, not required parts to find.
+            missing_slots = []
+        else:
+            missing_slots = nonmatching_slots
+        if result and receipts and missing_slots:
+            coverage_complete = all(
+                receipt["state"] not in ("not_executed", "coverage_incomplete")
+                for receipt in receipts
+            )
+            if not coverage_complete:
+                receipt_state = "coverage_incomplete"
+                meaning = (
+                    "Required coverage did not complete, so this check cannot "
+                    "support an absence conclusion."
+                )
+            elif found_any:
+                receipt_state = "missing_required_part"
+                meaning = (
+                    "Evidence was found for part of this requirement, but one "
+                    "or more required parts had no matching moment."
+                )
+            elif any(receipt["state"] == "no_qualifying_match" for receipt in receipts):
+                receipt_state = "no_qualifying_match"
+                meaning = (
+                    "Candidate moments were retrieved, but none qualified as "
+                    "direct evidence for the required check."
+                )
+            else:
+                receipt_state = "not_found"
+                meaning = (
+                    "No candidate moment was found in the completed searches. "
+                    "This is not, by itself, proof that the requirement is absent."
+                )
+            no_hit_receipt = {
+                "state": receipt_state,
+                "searches_completed": sum(1 for run in counting_runs if run["executed"]),
+                "searches_expected": len(counting_runs),
+                "coverage_complete": coverage_complete,
+                "missing_slots": missing_slots,
+                "receipts": receipts,
+                "meaning": meaning,
+            }
 
         rule_views.append(
             {
@@ -1048,6 +1463,7 @@ def get_report(
                         "confidence_band": result.confidence_band,
                         "explanation": result.explanation,
                         "measurement_intervals": result.measurement_intervals,
+                        "evidence_ids": result.evidence_ids or [],
                         "evaluator_version": result.evaluator_version,
                         "source": "machine",
                         # Which layer concluded this, and what the other layer
@@ -1063,6 +1479,7 @@ def get_report(
                 ),
                 "retrieval_runs": run_views,
                 "evidence": evidence_views,
+                "no_hit_receipt": no_hit_receipt,
             }
         )
 
@@ -1096,8 +1513,24 @@ def get_report(
             "id": submission.id,
             "state": submission.state,
             "creator_reference": submission.creator_reference,
-            "error_summary": submission.error_summary,
+            "error_summary": _client_safe_text(submission.error_summary),
         },
+        "campaign": {
+            "id": campaign.id if campaign else submission.campaign_id,
+            "name": campaign.name if campaign else None,
+            "brief": brief.original_text if brief else None,
+        },
+        "source_attribution": (
+            {
+                "title": attribution.title,
+                "author": attribution.author,
+                "source_page_url": attribution.source_page_url,
+                "license_name": attribution.license_name,
+                "license_url": attribution.license_url,
+            }
+            if attribution
+            else None
+        ),
         "adjudication": {
             # Advisory only. The permitted set is what a human may actually do.
             "machine_recommendation": (
@@ -1124,15 +1557,12 @@ def get_report(
             "version": version.version,
             "rule_set_version_id": version.rule_set_version_id,
             "source_type": version.source_type,
-            "source_url": version.source_url,
         },
         "media": (
             {
-                "provider_video_id": asset.provider_video_id,
-                "provider_collection_id": asset.provider_collection_id,
+                "id": asset.id,
                 "duration_seconds": asset.duration_seconds,
-                "stream_url": asset.provider_stream_url,
-                "sdk_version": asset.sdk_version,
+                "playable": bool(asset.provider_stream_url),
             }
             if asset
             else None
@@ -1206,10 +1636,59 @@ def get_audit(
             "category": e.category,
             "actor": e.actor,
             "subject_type": e.subject_type,
-            "detail": e.detail,
+            "detail": _client_safe_detail(e.detail),
         }
         for e in events
     ]
+
+
+@app.get("/api/submissions/{submission_id}/playback")
+def submission_playback(
+    submission_id: str,
+    principal: Principal = Depends(current_principal),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Authorized full-source playback without exposing its source locator."""
+    submission = authorized_submission(session, principal, submission_id, CAN_READ)
+    version = _latest_version(session, submission)
+    asset = session.scalar(
+        select(MediaAsset).where(MediaAsset.submission_version_id == version.id)
+    )
+    if asset is None or not asset.provider_video_id:
+        raise HTTPException(409, "No playable source is available yet.")
+    try:
+        asset.provider_stream_url = VideoDBAdapter().generate_stream_url(
+            asset.provider_video_id,
+            collection_id=asset.provider_collection_id,
+        )
+    except ProviderError as exc:
+        raise HTTPException(
+            502, "The full source could not be prepared. Try again shortly."
+        ) from exc
+    session.commit()
+    return issue_playback(session, principal, asset.id)
+
+
+def _clip_window(
+    detected_start: float,
+    detected_end: float,
+    source_duration: float,
+    target_seconds: float = 10.0,
+) -> tuple[float, float]:
+    """Pad a short canonical interval without changing or cropping it."""
+    start = detected_start
+    end = detected_end
+    if end - start >= target_seconds:
+        return start, end
+    missing = target_seconds - (end - start)
+    playback_start = max(0.0, start - missing / 2)
+    playback_end = min(source_duration, end + missing / 2)
+    if playback_end - playback_start < target_seconds:
+        if playback_start == 0.0:
+            playback_end = min(source_duration, target_seconds)
+        else:
+            playback_start = max(0.0, source_duration - target_seconds)
+    return playback_start, playback_end
 
 
 @app.get("/api/evidence/{evidence_id}/playback")
@@ -1229,21 +1708,110 @@ def evidence_playback(
     if item is None:
         raise HTTPException(404, "Evidence not found")
 
-    # Authorization is resolved through the asset's owning workspace, so an
-    # evidence id from another tenant resolves to 404, not to media.
-    playback = issue_playback(session, principal, item.media_asset_id)
-
-    asset = session.get(MediaAsset, item.media_asset_id)
-    if not asset or not asset.provider_stream_url:
+    # Authorize BEFORE cache lookup, provider generation, or any write. A
+    # guessed cross-tenant evidence id must not trigger spend or timing signals.
+    asset = authorized_media_asset(
+        session, principal, item.media_asset_id, CAN_READ
+    )
+    if not asset or not asset.provider_stream_url or not asset.provider_video_id:
         raise HTTPException(
             409,
             "No playable stream is recorded for this evidence. The media may not "
             "have finished ingesting.",
         )
+    detected_end = item.end_seconds if item.end_seconds is not None else item.start_seconds
+    if item.start_seconds < 0 or detected_end < item.start_seconds:
+        raise HTTPException(409, "Evidence timestamps are invalid and require review.")
+    if not asset.duration_seconds:
+        # Preserve the old, authorized playback capability when a provider did
+        # not report duration. Without a trustworthy source boundary we cannot
+        # generate an honest padded clip, so return full-source context.
+        playback = issue_playback(session, principal, asset.id)
+        return {
+            **playback,
+            "detected_start_seconds": item.start_seconds,
+            "detected_end_seconds": detected_end,
+            "playback_start_seconds": 0.0,
+            "playback_end_seconds": None,
+            "marker_start_seconds": item.start_seconds,
+            "marker_end_seconds": detected_end,
+            "showing_surrounding_context": True,
+            "playback_mode": "full_source_context",
+        }
+    tolerance = 0.05
+    if detected_end > asset.duration_seconds + tolerance:
+        raise HTTPException(409, "Evidence timestamps exceed the source and require review.")
+    # Preserve the canonical interval. A sub-frame provider rounding delta is
+    # handled by treating the canonical end as the effective source boundary.
+    effective_duration = max(asset.duration_seconds, detected_end)
+    playback_start, playback_end = _clip_window(
+        item.start_seconds, detected_end, effective_duration
+    )
+    # Serialize cold-cache creation on the immutable evidence row. The row is
+    # never changed; the lock only prevents concurrent provider calls and a
+    # race on the playback-window unique constraint.
+    session.scalar(
+        select(EvidenceItem)
+        .where(EvidenceItem.id == item.id)
+        .with_for_update()
+    )
+    window = session.scalar(
+        select(EvidencePlaybackWindow).where(
+            EvidencePlaybackWindow.evidence_item_id == item.id
+        )
+    )
+    if window is None or window.expires_at <= utcnow():
+        try:
+            stream_url = VideoDBAdapter().generate_stream_url(
+                asset.provider_video_id,
+                collection_id=asset.provider_collection_id,
+                timeline=[(playback_start, playback_end)],
+            )
+        except ProviderError as exc:
+            raise HTTPException(
+                502, "The evidence clip could not be prepared. Try again shortly."
+            ) from exc
+        if window is None:
+            window = EvidencePlaybackWindow(
+                evidence_item_id=item.id,
+                media_asset_id=asset.id,
+                detected_start_seconds=item.start_seconds,
+                detected_end_seconds=detected_end,
+                playback_start_seconds=playback_start,
+                playback_end_seconds=playback_end,
+                provider_stream_url=stream_url,
+                expires_at=utcnow() + timedelta(hours=23),
+            )
+            session.add(window)
+        else:
+            window.provider_stream_url = stream_url
+            window.expires_at = utcnow() + timedelta(hours=23)
+        session.flush()
+        session.commit()
+
+    playback = issue_playback(
+        session,
+        principal,
+        item.media_asset_id,
+        evidence_window_id=window.id,
+    )
     return {
         **playback,
-        "seek_to_seconds": item.start_seconds,
-        "end_seconds": item.end_seconds,
+        "detected_start_seconds": window.detected_start_seconds,
+        "detected_end_seconds": window.detected_end_seconds,
+        "playback_start_seconds": window.playback_start_seconds,
+        "playback_end_seconds": window.playback_end_seconds,
+        "marker_start_seconds": (
+            window.detected_start_seconds - window.playback_start_seconds
+        ),
+        "marker_end_seconds": (
+            window.detected_end_seconds - window.playback_start_seconds
+        ),
+        "showing_surrounding_context": (
+            window.playback_start_seconds != window.detected_start_seconds
+            or window.playback_end_seconds != window.detected_end_seconds
+        ),
+        "playback_mode": "bounded_context",
     }
 
 
@@ -1406,6 +1974,24 @@ def review_rule(
             "This requirement has no machine result yet. There is nothing to "
             "confirm or override until evaluation has run.",
         )
+
+    if payload.evidence_viewed:
+        valid_evidence_ids = set(
+            session.scalars(
+                select(EvidenceItem.id)
+                .join(RetrievalRun, EvidenceItem.retrieval_run_id == RetrievalRun.id)
+                .where(
+                    RetrievalRun.submission_version_id == version.id,
+                    RetrievalRun.rule_id == rule.id,
+                )
+            )
+        )
+        unknown = set(payload.evidence_viewed) - valid_evidence_ids
+        if unknown:
+            raise HTTPException(
+                422,
+                "Referenced evidence must belong to this requirement and submission.",
+            )
 
     human_state = (
         result.state if payload.action is ReviewAction.confirm else payload.human_state

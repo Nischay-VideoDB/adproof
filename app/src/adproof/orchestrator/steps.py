@@ -603,7 +603,9 @@ def run_retrieval(
             # Saturation means more results may exist, so this run understates
             # the truth. Recorded so the evaluator can refuse to assert a
             # definitive negative from an incomplete evidence set.
-            run.result_truncated = len(shots) >= effective_threshold
+            run.result_truncated = (
+                not enumerate_scenes and len(shots) >= effective_threshold
+            )
             if run.result_truncated:
                 logger.warning(
                     "retrieval for rule %s saturated at %d results; measurement "

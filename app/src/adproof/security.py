@@ -124,12 +124,20 @@ MEDIA_TOKEN_TTL_SECONDS = 900
 
 
 def issue_session(user_id: str) -> str:
-    return _sign({"sub": user_id, "exp": time.time() + SESSION_TTL_SECONDS})
+    return _sign(
+        {
+            "typ": "adproof.session.v1",
+            "sub": user_id,
+            "exp": time.time() + SESSION_TTL_SECONDS,
+        }
+    )
 
 
 def read_session(token: str) -> str:
     """Return the user id, or raise TokenError."""
     payload = _unsign(token)
+    if payload.get("typ") != "adproof.session.v1":
+        raise TokenError("Token is not a session token.")
     user_id = payload.get("sub")
     if not user_id:
         raise TokenError("Token carries no subject.")
@@ -150,6 +158,7 @@ def issue_media_token(user_id: str, media_asset_id: str) -> str:
     """
     return _sign(
         {
+            "typ": "adproof.media.v1",
             "sub": user_id,
             "asset": media_asset_id,
             "exp": time.time() + MEDIA_TOKEN_TTL_SECONDS,
@@ -159,6 +168,8 @@ def issue_media_token(user_id: str, media_asset_id: str) -> str:
 
 def read_media_token(token: str) -> MediaGrant:
     payload = _unsign(token)
+    if payload.get("typ") != "adproof.media.v1":
+        raise TokenError("Token is not a media token.")
     user_id, asset = payload.get("sub"), payload.get("asset")
     if not user_id or not asset:
         raise TokenError("Media token is incomplete.")
@@ -175,7 +186,7 @@ def _fernet() -> "Fernet":
     return Fernet(key)
 
 
-def seal_upstream_url(url: str) -> str:
+def seal_upstream_url(url: str, media_asset_id: str) -> str:
     """Encrypt a provider URL into an opaque, tamper-proof reference.
 
     Signing alone was not enough: a signed-but-plaintext URL still HANDS the
@@ -186,14 +197,32 @@ def seal_upstream_url(url: str) -> str:
     Fernet is authenticated encryption, so this also subsumes the integrity
     guarantee a bare signature provided.
     """
-    return _fernet().encrypt(url.encode()).decode()
+    envelope = json.dumps(
+        {
+            "typ": "adproof.upstream.v2",
+            "asset": media_asset_id,
+            "url": url,
+        },
+        separators=(",", ":"),
+    )
+    return _fernet().encrypt(envelope.encode()).decode()
 
 
-def open_upstream_url(sealed: str) -> str:
+def open_upstream_url(sealed: str, media_asset_id: str) -> str:
     """Decrypt an upstream reference. Raises TokenError on any tampering."""
     from cryptography.fernet import InvalidToken
 
     try:
-        return _fernet().decrypt(sealed.encode()).decode()
-    except (InvalidToken, ValueError, TypeError) as exc:
+        payload = json.loads(_fernet().decrypt(sealed.encode()).decode())
+        if payload.get("typ") != "adproof.upstream.v2":
+            raise TokenError("Upstream media reference has the wrong purpose.")
+        if payload.get("asset") != media_asset_id:
+            raise TokenError("Upstream media reference belongs to another asset.")
+        url = payload.get("url")
+        if not isinstance(url, str) or not url:
+            raise TokenError("Upstream media reference is incomplete.")
+        return url
+    except TokenError:
+        raise
+    except (InvalidToken, ValueError, TypeError, json.JSONDecodeError) as exc:
         raise TokenError("Upstream media reference is not valid.") from exc

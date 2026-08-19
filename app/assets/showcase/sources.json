@@ -1,0 +1,36 @@
+{
+  "snapshot_date": "2026-08-20",
+  "reuse_note": "Frozen, bounded source assets used only for AdProof's fictional curated demonstration campaigns. Analytical overlays and excerpts do not imply creator or brand endorsement.",
+  "sources": [
+    {
+      "slug": "biossance",
+      "file": "biossance-eye-cream-demo.mp4",
+      "sha256": "109314104a453c71554b7a6f1b52f803b2479fc231e34f404e3c34d5374a170a",
+      "bytes": 3567253,
+      "duration_seconds": 42.678277,
+      "dimensions": "640x360",
+      "title": "Biossance Squalane & Marine Algae Eye Cream | Product Demo",
+      "author": "Jessica Posh",
+      "source_url": "https://www.youtube.com/watch?v=LToWCtEYyhM",
+      "license": "Creative Commons Attribution (CC BY)",
+      "license_evidence": "YouTube metadata: Creative Commons Attribution license (reuse allowed)",
+      "license_information_url": "https://support.google.com/youtube/answer/2797468"
+    },
+    {
+      "slug": "nank",
+      "file": "nank-runner-diver2-review.mp4",
+      "sha256": "6091fb0d4be5394756237df28a122a3b75abaa53e7186618f706ef9b40371e91",
+      "bytes": 35491044,
+      "duration_seconds": 337.866667,
+      "dimensions": "854x480",
+      "title": "Nank Runner Diver2 Bone Conduction Swimming Headphones",
+      "author": "Terence Eden / @edent",
+      "published_at": "2023-10-16",
+      "source_url": "https://tube.tchncs.de/w/baf78162-e0c1-45c9-8617-2177ecc384ca",
+      "source_metadata_url": "https://tube.tchncs.de/api/v1/videos/baf78162-e0c1-45c9-8617-2177ecc384ca",
+      "license": "Attribution – Share Alike",
+      "license_evidence": "PeerTube metadata licence id 2: Attribution - Share Alike",
+      "license_information_url": "https://creativecommons.org/share-your-work/cclicenses/"
+    }
+  ]
+}

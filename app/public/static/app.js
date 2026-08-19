@@ -107,6 +107,10 @@ const STAGE_LABEL = {
 };
 
 let currentSubmissionId = null;
+let currentCampaignId = null;
+let selectedRuleId = null;
+let currentReport = null;
+let currentEvidenceId = null;
 let hls = null;
 let pollTimer = null;
 
@@ -131,17 +135,19 @@ async function loadIntegrity() {
     data = await response.json();
     integrityData = data;
   } catch (err) {
-    badge.textContent = "Integrity status unavailable";
-    badge.className = "badge badge-error";
+    if (badge) {
+      badge.textContent = "Integrity status unavailable";
+      badge.className = "badge badge-error";
+    }
     return;
   }
 
   // Provider integrity is the high-value status. A missing disclosure node or
   // an unexpected optional field must never overwrite a successful live check.
-  if (data.provider_configured) {
+  if (badge && data.provider_configured) {
     badge.textContent = "Live provider — no fixture data";
     badge.className = "badge badge-live";
-  } else {
+  } else if (badge) {
     badge.textContent = "VideoDB not configured — processing will fail";
     badge.className = "badge badge-error";
   }
@@ -199,7 +205,7 @@ async function loadSubmissions() {
     player.load();
   }
   const selectedStillExists = subs.some((s) => s.id === currentSubmissionId);
-  const shouldOpenFirst = subs.length > 0 && !selectedStillExists;
+  const shouldOpenFirst = subs.length > 0 && !selectedStillExists && !currentSubmissionId;
   if (shouldOpenFirst) currentSubmissionId = subs[0].id;
   $("submissions-empty").hidden = subs.length > 0;
   list.innerHTML = subs
@@ -226,10 +232,12 @@ async function loadSubmissions() {
   if (shouldOpenFirst) loadReport();
 }
 
-function selectSubmission(id) {
+function selectSubmission(id, ruleId = null, autoplayEvidenceId = null) {
   currentSubmissionId = id;
+  selectedRuleId = ruleId;
   loadSubmissions();
-  loadReport();
+  loadReport(autoplayEvidenceId);
+  switchView("review");
 }
 
 function renderStages(stages) {
@@ -257,55 +265,24 @@ function renderStages(stages) {
 }
 
 function renderEvidence(ev) {
-  const counted = ev.counted_toward_measurement
-    ? `<span class="tag tag-counted">counted in measurement</span>`
-    : `<span class="tag tag-context">context only — not counted</span>`;
-  const roleTag = ev.attests_absence
-    ? `<span class="tag tag-context">reports absence</span>`
-    : `<span class="tag tag-${esc(ev.role)}">${esc(ev.role)}</span>`;
-  const score =
-    ev.provider_score === null || ev.provider_score === undefined
-      ? "not supplied"
-      : `${ev.provider_score.toFixed(3)} (uncalibrated)`;
-  const p = ev.provenance;
+  const label = ev.evidence_kind === "issue"
+    ? "Potential issue"
+    : ev.evidence_kind === "context"
+      ? "Context"
+      : "Measured proof";
   return `
-    <li class="evidence evidence-${esc(ev.role)}">
-      <div class="evidence-head">
-        <button class="btn btn-play" data-evidence="${esc(ev.id)}"
-                data-start="${ev.start_seconds}">
-          ▶ ${fmtTime(ev.start_seconds)}${
+    <button class="evidence evidence-${esc(ev.evidence_kind)} ${ev.id === currentEvidenceId ? "active" : ""} btn-play"
+            data-evidence="${esc(ev.id)}" type="button">
+      <span class="evidence-time">${fmtTime(ev.start_seconds)}${
             ev.end_seconds !== null && ev.end_seconds !== undefined
               ? " – " + fmtTime(ev.end_seconds)
               : ""
-          }
-        </button>
-        ${roleTag}${counted}
-        <span class="tag tag-conf-${esc(ev.confidence_band)}">confidence: ${esc(
-          ev.confidence_band
-        )}</span>
-      </div>
-      ${ev.text ? `<p class="evidence-text">${esc(ev.text)}</p>` : ""}
-      <details class="provenance">
-        <summary>Provenance</summary>
-        <dl>
-          <dt>Origin</dt><dd>${esc(ev.origin)}</dd>
-          <dt>Modality</dt><dd>${esc(ev.modality)}</dd>
-          <dt>Retrieval query</dt><dd><code>${esc(p.retrieval_query)}</code></dd>
-          <dt>Search / index type</dt>
-          <dd>${esc(p.search_type)} over ${esc(p.index_type)}</dd>
-          <dt>Provider index</dt>
-          <dd>${esc(p.provider_index_name ?? "—")} <code>${esc(
-            p.provider_index_id ?? "—"
-          )}</code></dd>
-          <dt>Provider video</dt><dd><code>${esc(p.provider_video_id ?? "—")}</code></dd>
-          <dt>Provider score</dt><dd>${esc(score)}</dd>
-          <dt>Retrieval plan</dt><dd>${esc(p.plan_version)}</dd>
-          <dt>SDK</dt><dd>${esc(p.sdk_version ?? "—")}</dd>
-          <dt>Retrieval run</dt><dd><code>${esc(p.retrieval_run_id)}</code></dd>
-          <dt>Recorded at</dt><dd>${esc(p.created_at)}</dd>
-        </dl>
-      </details>
-    </li>`;
+          }</span>
+      <span class="evidence-copy"><strong>${label}</strong>${
+        ev.text ? `<span>${esc(ev.text)}</span>` : ""
+      }</span>
+      <span aria-hidden="true" class="evidence-arrow">→</span>
+    </button>`;
 }
 
 
@@ -388,6 +365,25 @@ function renderAdjudication(report) {
   const adj = report.adjudication;
   const permitted = new Set(adj.permitted_decisions);
   const rec = adj.machine_recommendation;
+  const effectiveState = (rule) =>
+    (rule.reviews || []).at(-1)?.human_state || rule.result?.state;
+  const failedRules = report.rules.filter((rule) => effectiveState(rule) === "fail");
+  const attentionRules = report.rules.filter((rule) =>
+    ["uncertain", "human_review_required"].includes(effectiveState(rule))
+  );
+  const presentationReasons = [...adj.reasons];
+  if (failedRules.length) {
+    presentationReasons.unshift(
+      `${failedRules.length} requirement(s) are currently resolved as failed.`
+    );
+  } else if (attentionRules.length) {
+    const allResolvedCopy = "Every requirement passed or was resolved by a reviewer.";
+    const index = presentationReasons.indexOf(allResolvedCopy);
+    if (index >= 0) presentationReasons.splice(index, 1);
+    presentationReasons.unshift(
+      `${attentionRules.length} requirement(s) remain marked uncertain after human review; the final routing decision is shown below.`
+    );
+  }
 
   const mayAct = (decision) =>
     decision === "approve" || decision === "reject"
@@ -396,11 +392,10 @@ function renderAdjudication(report) {
   const buttons = ["approve", "request_changes", "escalate", "reject"]
     .map((d) => {
       const enabled = permitted.has(d) && mayAct(d);
-      const isRec = rec === d;
-      return `<button class="btn decision-btn ${isRec ? "btn-primary" : ""}"
+      return `<button class="btn decision-btn"
         data-decision="${d}" ${enabled ? "" : "disabled"}
         title="${enabled ? "" : "Not available until every requirement is resolved"}">
-        ${esc(DECISION_LABELS[d])}${isRec ? " · suggested" : ""}
+        ${esc(DECISION_LABELS[d])}
       </button>`;
     })
     .join("");
@@ -425,160 +420,101 @@ function renderAdjudication(report) {
 
   return `
     <div class="adjudication">
-      <div class="adj-head">
-        <h3 class="adj-title">Decision</h3>
-        <span class="tag">machine suggestion: ${esc(rec ?? "none")}</span>
-      </div>
-      <ul class="adj-reasons">${adj.reasons
+      <ul class="adj-reasons">${presentationReasons
         .map((r) => `<li>${esc(r)}</li>`)
         .join("")}</ul>
       ${actions}
       <p class="note">
-        The suggestion is advisory. Nothing is approved or rejected
-        automatically, and approval stays unavailable until every requirement
-        has either passed or been reviewed by a person.
+        A person owns the final decision. The automated recommendation is
+        recorded for audit (${esc(rec ?? "none")}) but is not presented as the answer.
       </p>
       ${history}
     </div>`;
 }
 
 function renderRules(rules, permissions) {
-  $("rules").innerHTML = rules
-    .map((rule) => {
-      const res = rule.result;
-      const state = res ? res.state : "processing";
-      const stateLabel = res ? STATE_LABEL[res.state] ?? res.state : "Not yet evaluated";
+  if (!rules.length) return;
+  if (!rules.some((rule) => rule.id === selectedRuleId)) {
+    const firstUnresolved = rules.find((rule) => {
+      const latest = (rule.reviews || []).at(-1);
+      const state = latest?.human_state || rule.result?.state;
+      return ["uncertain", "human_review_required", "error", "processing"].includes(state);
+    });
+    selectedRuleId = (firstUnresolved || rules[0]).id;
+  }
+  $("rules").innerHTML = rules.map((rule) => {
+    const latest = (rule.reviews || []).at(-1);
+    const state = latest?.human_state || rule.result?.state || "processing";
+    return `<button type="button" class="requirement-item ${rule.id === selectedRuleId ? "active" : ""}"
+      data-rule-select="${esc(rule.id)}" aria-current="${rule.id === selectedRuleId ? "true" : "false"}">
+      <span class="result-dot result-${esc(state)}" aria-hidden="true"></span>
+      <span><strong>${esc(rule.requirement_text)}</strong><small>${esc(STATE_LABEL[state] || state)}${latest ? " · reviewed" : ""}</small></span>
+    </button>`;
+  }).join("");
 
-      let measurement = "";
-      if (res && res.measured_value !== null && res.measured_value !== undefined) {
-        const res_note = res.measurement_resolution_seconds
-          ? ` <span class="resolution">±${res.measurement_resolution_seconds}s sampling resolution</span>`
-          : "";
-        measurement = `<p class="measurement">Measured
-          <strong>${res.measured_value}</strong> ${esc(res.measured_unit ?? "")}
-          against a threshold of <strong>${res.threshold_value}</strong>
-          ${esc(res.measured_unit ?? "")}${res_note}</p>`;
-      }
+  const rule = rules.find((item) => item.id === selectedRuleId);
+  const res = rule.result;
+  const latest = (rule.reviews || []).at(-1);
+  const effective = latest?.human_state || res?.state || "processing";
+  const measurement = res && res.measured_value !== null && res.measured_value !== undefined
+    ? `<div class="proof-card"><span>Measured proof</span><strong>${esc(res.measured_value)} ${esc(res.measured_unit || "")}</strong><p>Required threshold: ${esc(res.threshold_value)} ${esc(res.measured_unit || "")}${res.measurement_resolution_seconds ? ` · ±${esc(res.measurement_resolution_seconds)}s sampling resolution` : ""}</p></div>`
+    : `<div class="proof-card"><span>Measured proof</span><strong>No numeric threshold</strong><p>This check is resolved from observed evidence and its configured policy.</p></div>`;
+  const noHit = rule.no_hit_receipt
+    ? `<div class="no-hit"><strong>${esc({
+        coverage_incomplete: "Coverage incomplete",
+        no_qualifying_match: "Retrieved context did not qualify",
+        missing_required_part: "A required part is missing",
+        not_found: "No matching moment found",
+      }[rule.no_hit_receipt.state] || "Evidence receipt")}</strong><p>${esc(rule.no_hit_receipt.meaning)}</p><small>${rule.no_hit_receipt.searches_completed} of ${rule.no_hit_receipt.searches_expected} required searches completed.</small></div>`
+    : "";
+  const reviewControls = res && permissions.can_review
+    ? `<div class="review-actions"><button class="btn btn-small" data-confirm="${esc(rule.id)}">Confirm finding</button><button class="btn btn-small" data-override="${esc(rule.id)}">Record exception</button></div>`
+    : "";
+  const humanBlock = latest
+    ? `<div class="human-verdict"><span class="eyebrow">Human position</span><strong>${esc(STATE_LABEL[latest.human_state] || latest.human_state)}</strong><p>${latest.reason_text ? esc(latest.reason_text) : "Reviewer confirmed the recorded finding."}</p></div>`
+    : "";
+  $("requirement-detail").innerHTML = `
+    <span class="eyebrow">Requirement ${rule.ordinal + 1}</span>
+    <div class="requirement-result"><span class="result-chip result-${esc(effective)}">${esc(STATE_LABEL[effective] || effective)}</span><h2>${esc(rule.requirement_text)}</h2></div>
+    ${measurement}
+    ${res ? `<div class="why-card"><span>Why this result</span><p>${esc(res.explanation)}</p></div>` : `<p class="empty">Evaluation has not completed.</p>`}
+    ${res?.absence_class && res.absence_class !== "not_applicable" ? `<p class="absence">${esc(ABSENCE_LABEL[res.absence_class])}</p>` : ""}
+    ${noHit}${humanBlock}${reviewControls}
+    <details class="secondary-disclosure"><summary>How this check was evaluated</summary><p class="note">${esc(rule.source_brief_excerpt || "Confirmed requirement")}</p><ul class="run-list">${renderRuns(rule.retrieval_runs)}</ul></details>`;
 
-      const absence =
-        res && res.absence_class && res.absence_class !== "not_applicable"
-          ? `<p class="absence">${esc(ABSENCE_LABEL[res.absence_class])}</p>`
-          : "";
+  const proof = rule.evidence.filter((item) => item.evidence_kind === "proof");
+  const issues = rule.evidence.filter((item) => item.evidence_kind === "issue");
+  const context = rule.evidence.filter((item) => item.evidence_kind === "context");
+  const evidenceGroup = (title, items) => items.length ? `
+    <section class="evidence-group"><h4>${title}</h4>${items.slice(0, 4).map(renderEvidence).join("")}
+    ${items.length > 4 ? `<details><summary>${items.length - 4} additional moment(s)</summary>${items.slice(4).map(renderEvidence).join("")}</details>` : ""}</section>` : "";
+  $("evidence-title").textContent = rule.requirement_text;
+  $("evidence-list").innerHTML = evidenceGroup("Measured moments", proof) + evidenceGroup("Potential issues", issues) + evidenceGroup("Context that may change the reading", context) + (!rule.evidence.length ? noHit : "");
 
-      const intervals =
-        res && res.measurement_intervals && res.measurement_intervals.length
-          ? `<p class="intervals">Merged intervals used:
-             ${res.measurement_intervals
-               .map((iv) => `${fmtTime(iv[0])}–${fmtTime(iv[1])}`)
-               .join(", ")}</p>`
-          : "";
-
-      const supporting = rule.evidence.filter((e) => e.role === "supporting");
-      const conflicting = rule.evidence.filter((e) => e.role === "conflicting");
-
-      const evidenceBlock =
-        rule.evidence.length === 0
-          ? `<p class="empty">No evidence items were returned for this
-             requirement. See the retrieval runs below to distinguish
-             "searched and found nothing" from "did not search".</p>`
-          : `
-            <div class="evidence-columns">
-              <div>
-                <h5>Supporting (${supporting.length})</h5>
-                <ul class="evidence-list">${supporting
-                  .map(renderEvidence)
-                  .join("")}</ul>
-              </div>
-              <div>
-                <h5>Conflicting (${conflicting.length})</h5>
-                ${
-                  conflicting.length
-                    ? `<ul class="evidence-list">${conflicting
-                        .map(renderEvidence)
-                        .join("")}</ul>`
-                    : `<p class="empty">None retrieved.</p>`
-                }
-              </div>
-            </div>`;
-
-      const latest = (rule.reviews || [])[rule.reviews.length - 1];
-      const effective = latest ? latest.human_state : state;
-      const humanBlock = latest
-        ? `<div class="human-verdict">
-             <span class="result-chip result-${esc(latest.human_state)}">${esc(
-               STATE_LABEL[latest.human_state] ?? latest.human_state
-             )}</span>
-             <span class="source-tag">reviewer-confirmed</span>
-             <span class="muted-inline">${esc(latest.reviewer)} · ${
-               latest.action === "override"
-                 ? esc(REASON_LABELS[latest.reason_category] ?? latest.reason_category)
-                 : "confirmed the machine result"
-             }</span>
-             ${latest.reason_text ? `<p class="decision-rationale">${esc(latest.reason_text)}</p>` : ""}
-           </div>`
-        : "";
-      const reviewControls = res && permissions.can_review
-        ? `<div class="review-actions">
-             <button class="btn btn-small" data-confirm="${esc(rule.id)}">Confirm</button>
-             <button class="btn btn-small" data-override="${esc(rule.id)}">Override…</button>
-           </div>`
-        : "";
-
-      return `
-        <article class="rule rule-${esc(effective)}" data-rule="${esc(rule.id)}">
-          <header>
-            <span class="result-chip result-${esc(state)}">${esc(stateLabel)}</span>
-            <h4>${esc(rule.requirement_text)}</h4>
-          </header>
-          <p class="rule-meta">
-            ${esc(rule.rule_type)} · ${esc(rule.modality)} ·
-            absence policy: ${esc(rule.absence_policy)}${
-              rule.score_threshold !== null && rule.score_threshold !== undefined
-                ? ` · relevance cutoff: ${rule.score_threshold}`
-                : ""
-            }
-            ${
-              res
-                ? ` · <span class="source-tag">${esc(
-                    res.source
-                  )} result</span> · ${esc(res.evaluator_version)}`
-                : ""
-            }
-          </p>
-          ${measurement}
-          ${absence}
-          ${renderVerdict(res)}
-          ${res ? `<p class="explanation">${esc(res.explanation)}</p>` : ""}
-          ${intervals}
-          ${humanBlock}
-          ${reviewControls}
-          <details class="runs">
-            <summary>Retrieval runs (${rule.retrieval_runs.length})</summary>
-            <ul class="run-list">${renderRuns(rule.retrieval_runs)}</ul>
-          </details>
-          ${evidenceBlock}
-        </article>`;
-    })
-    .join("");
-
-  document.querySelectorAll(".btn-play").forEach((btn) =>
-    btn.addEventListener("click", () => playAt(btn.dataset.evidence))
-  );
+  document.querySelectorAll("[data-rule-select]").forEach((btn) => btn.addEventListener("click", () => {
+    selectedRuleId = btn.dataset.ruleSelect;
+    currentEvidenceId = null;
+    renderRules(rules, permissions);
+    const first = rules.find((item) => item.id === selectedRuleId)?.evidence.find((item) => item.evidence_kind !== "context");
+    if (first) playAt(first.id);
+  }));
+  document.querySelectorAll(".btn-play").forEach((btn) => btn.addEventListener("click", () => playAt(btn.dataset.evidence)));
   document.querySelectorAll("[data-confirm]").forEach((btn) =>
     btn.addEventListener("click", () => submitReview(btn.dataset.confirm, "confirm"))
   );
   document.querySelectorAll("[data-override]").forEach((btn) =>
     btn.addEventListener("click", () => openOverride(btn.dataset.override))
   );
-  document.querySelectorAll(".decision-btn").forEach((btn) =>
-    btn.addEventListener("click", () => openDecision(btn.dataset.decision))
-  );
 }
 
 async function submitReview(ruleId, action, body = {}) {
+  const selectedRule = currentReport?.rules?.find((rule) => rule.id === ruleId);
+  const evidenceViewed = currentEvidenceId && selectedRule?.evidence?.some((item) => item.id === currentEvidenceId)
+    ? [currentEvidenceId]
+    : [];
   const res = await api(
     `/api/submissions/${currentSubmissionId}/rules/${ruleId}/review`,
-    { method: "POST", body: JSON.stringify({ action, ...body }) }
+    { method: "POST", body: JSON.stringify({ action, evidence_viewed: evidenceViewed, ...body }) }
   );
   if (!res.ok) {
     const detail = await res.json().catch(() => ({}));
@@ -639,6 +575,7 @@ function loadStream(url, onReady) {
 }
 
 async function fetchPlayback(evidenceId) {
+  $("player-note").textContent = "Preparing a bounded evidence clip…";
   const res = await api(`/api/evidence/${evidenceId}/playback`);
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
@@ -659,34 +596,68 @@ async function preloadPlayer(evidenceId) {
 async function playAt(evidenceId) {
   const data = await fetchPlayback(evidenceId);
   if (!data) return;
+  currentEvidenceId = evidenceId;
+  document.querySelectorAll(".btn-play").forEach((button) =>
+    button.classList.toggle("active", button.dataset.evidence === evidenceId)
+  );
   const player = $("player");
-  const seek = () => {
-    player.currentTime = data.seek_to_seconds;
+  const fullSourceContext = data.playback_mode === "full_source_context";
+  const start = () => {
+    player.currentTime = fullSourceContext ? data.detected_start_seconds : 0;
     player.play().catch(() => {});
   };
-  loadStream(data.playback_url, seek);
-  if (player.dataset.src === data.playback_url && player.readyState >= 1) seek();
+  loadStream(data.playback_url, start);
+  if (player.dataset.src === data.playback_url && player.readyState >= 1) start();
+  const marker = $("detection-marker");
+  const renderMarker = (duration) => {
+    if (!Number.isFinite(duration) || duration <= 0) {
+      marker.hidden = true;
+      return;
+    }
+    const markerStartSeconds = fullSourceContext
+      ? data.detected_start_seconds
+      : data.marker_start_seconds;
+    const markerEndSeconds = fullSourceContext
+      ? data.detected_end_seconds
+      : data.marker_end_seconds;
+    marker.style.setProperty("--marker-start", `${(markerStartSeconds / duration) * 100}%`);
+    marker.style.setProperty("--marker-width", `${Math.max(((markerEndSeconds - markerStartSeconds) / duration) * 100, 1.5)}%`);
+    marker.hidden = false;
+  };
+  if (fullSourceContext) {
+    renderMarker(player.duration);
+    player.addEventListener("loadedmetadata", () => renderMarker(player.duration), { once: true });
+  } else {
+    renderMarker(data.playback_end_seconds - data.playback_start_seconds);
+  }
+  $("player-note").textContent = fullSourceContext
+    ? `Detected ${fmtTime(data.detected_start_seconds)}–${fmtTime(data.detected_end_seconds)} · showing full source context because duration was unavailable.`
+    : `Detected ${fmtTime(data.detected_start_seconds)}–${fmtTime(data.detected_end_seconds)}${data.showing_surrounding_context ? " · showing surrounding context" : ""}.`;
 }
 
-async function loadReport() {
+async function loadReport(autoplayEvidenceId = null) {
   if (!currentSubmissionId) return;
-  const res = await api(`/api/submissions/${currentSubmissionId}/report`);
+  // Report payloads can be large. If a reviewer selects another matrix cell
+  // while an earlier request is in flight, the stale response must never
+  // replace the newly selected submission or requirement.
+  const requestedSubmissionId = currentSubmissionId;
+  const res = await api(`/api/submissions/${requestedSubmissionId}/report`);
   if (!res.ok) return;
   const data = await res.json();
+  if (currentSubmissionId !== requestedSubmissionId) return;
+  currentReport = data;
 
   // Swap the placeholder for the report. `report-panel` is the always-visible
   // container; the report itself lives in `report-body`.
   $("report-placeholder").hidden = true;
   $("report-body").hidden = false;
-  $("report-title").textContent = `Submission — ${data.submission.creator_reference}`;
-  $("report-sub").textContent = `${data.workspace.name ?? "Workspace"} · ${
-    data.workspace.is_showcase ? "read-only showcase" : "live workspace"
-  }`;
+  $("report-title").textContent = data.submission.creator_reference;
+  $("report-sub").textContent = `${data.campaign.name ?? "Campaign"} · version ${data.version.version}`;
   const access = $("report-access");
   access.hidden = false;
   access.className = `report-access ${data.permissions.read_only ? "is-read-only" : "is-writable"}`;
   access.innerHTML = data.permissions.read_only
-    ? `<strong>Explore a completed, real run.</strong> Playback, timestamps, provider provenance, reviews and decisions are preserved; this shared record cannot be changed.`
+    ? `<strong>Curated demonstration · read only.</strong> Inspect each requirement, its measurement, exact clip, and recorded human decision.`
     : `<strong>Your live sandbox.</strong> Create campaigns, submit public media URLs, review findings and record decisions here.`;
   const chip = $("submission-state");
   chip.textContent = data.submission.state;
@@ -710,33 +681,35 @@ async function loadReport() {
   if (data.media) {
     $("media-info").innerHTML = `
       <dl>
-        <dt>VideoDB video</dt><dd><code>${esc(
-          data.media.provider_video_id ?? "—"
-        )}</code></dd>
-        <dt>Collection</dt><dd><code>${esc(
-          data.media.provider_collection_id ?? "—"
-        )}</code></dd>
         <dt>Duration</dt><dd>${
           data.media.duration_seconds === null ||
           data.media.duration_seconds === undefined
-            ? "not reported by provider"
+            ? "not available"
             : data.media.duration_seconds.toFixed(2) + "s"
         }</dd>
-        <dt>SDK</dt><dd>${esc(data.media.sdk_version ?? "—")}</dd>
+        <dt>Playback</dt><dd>${data.media.playable ? "Available through authenticated AdProof media access" : "Not ready"}</dd>
       </dl>`;
-    $("player-note").textContent =
-      "Playback is proxied through AdProof with a short-lived token. The " +
-      "provider URL is never sent to your browser.";
   } else {
     $("media-info").innerHTML =
       `<p class="empty">No media reference recorded yet. Ingestion has not completed.</p>`;
   }
+  if (data.source_attribution) {
+    const source = data.source_attribution;
+    $("media-info").insertAdjacentHTML("beforeend", `<details class="source-license"><summary>Source &amp; license</summary><dl><dt>Title</dt><dd>${esc(source.title)}</dd><dt>Author</dt><dd>${esc(source.author)}</dd><dt>Source</dt><dd><a href="${esc(source.source_page_url)}" target="_blank" rel="noopener noreferrer">${esc(source.source_page_url)}</a></dd><dt>License</dt><dd><a href="${esc(source.license_url)}" target="_blank" rel="noopener noreferrer">Licensed under ${esc(source.license_name)}</a></dd></dl><p>AdProof uses bounded excerpts and analytical overlays from this independently published video. This is a fictional, curated campaign; AdProof did not commission the video, and no creator, brand, retailer, platform, or uploader endorsement is implied.</p></details>`);
+  }
 
   $("adjudication-slot").innerHTML = renderAdjudication(data);
   renderRules(data.rules, data.permissions);
+  document.querySelectorAll(".decision-btn").forEach((btn) => btn.addEventListener("click", () => openDecision(btn.dataset.decision)));
+  const targetEvidence = autoplayEvidenceId || data.rules.find((r) => r.id === selectedRuleId)?.evidence.find((e) => e.evidence_kind !== "context")?.id;
+  if (targetEvidence) playAt(targetEvidence);
 
-  const firstEvidence = data.rules.flatMap((r) => r.evidence)[0];
-  if (data.media && firstEvidence) preloadPlayer(firstEvidence.id);
+  const auditRes = await api(`/api/submissions/${requestedSubmissionId}/audit`);
+  if (auditRes.ok) {
+    const events = await auditRes.json();
+    if (currentSubmissionId !== requestedSubmissionId) return;
+    $("audit-list").innerHTML = `<h4>Audit trail</h4><ol class="audit-list">${events.map((event) => `<li><strong>${esc(event.category.replaceAll(".", " "))}</strong><span>${esc(event.actor)} · ${esc(new Date(event.at).toLocaleString())}</span></li>`).join("")}</ol>`;
+  }
 
   clearTimeout(pollTimer);
   if (!data.processing_complete) {
@@ -747,6 +720,16 @@ async function loadReport() {
   }
 }
 
+$("full-source-btn").addEventListener("click", async () => {
+  if (!currentSubmissionId) return;
+  const response = await api(`/api/submissions/${currentSubmissionId}/playback`);
+  if (!response.ok) return;
+  const data = await response.json();
+  $("detection-marker").hidden = true;
+  $("player-note").textContent = "Full source playback · evidence markers are shown only on bounded clips.";
+  loadStream(data.playback_url, () => $("player").play().catch(() => {}));
+});
+
 $("retry-btn").addEventListener("click", async () => {
   await api(`/api/submissions/${currentSubmissionId}/retry`, { method: "POST" });
   loadReport();
@@ -754,40 +737,49 @@ $("retry-btn").addEventListener("click", async () => {
 
 /* ── views ──────────────────────────────────────────────────────────────── */
 
+function switchView(view) {
+  document.querySelectorAll(".tab").forEach((tab) => {
+    const active = tab.dataset.view === view;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", String(active));
+  });
+  $("view-review").hidden = view !== "review";
+  $("view-campaigns").hidden = view !== "campaigns";
+  $("view-analytics").hidden = view !== "analytics";
+  if (view === "analytics") loadAnalytics();
+}
+
 document.querySelectorAll(".tab").forEach((tab) =>
-  tab.addEventListener("click", () => {
-    document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
-    tab.classList.add("active");
-    $("view-review").hidden = tab.dataset.view !== "review";
-    $("view-campaigns").hidden = tab.dataset.view !== "campaigns";
-    $("view-analytics").hidden = tab.dataset.view !== "analytics";
-    if (tab.dataset.view === "analytics") loadAnalytics();
-  })
+  tab.addEventListener("click", () => switchView(tab.dataset.view))
 );
 
 $("disclosure-toggle").addEventListener("click", () => {
   const list = $("disclosure-list");
   list.hidden = !list.hidden;
+  $("disclosure-toggle").setAttribute("aria-expanded", String(!list.hidden));
 });
 
 /* ── campaigns ──────────────────────────────────────────────────────────── */
 
 async function loadCampaigns() {
   campaigns = await (await api("/api/campaigns")).json();
+  if (!campaigns.some((campaign) => campaign.id === currentCampaignId)) {
+    currentCampaignId = campaigns[0]?.id || null;
+  }
   $("campaigns-empty").hidden = campaigns.length > 0;
   $("campaign-list").innerHTML = campaigns
     .map(
-      (c) => `<li><div class="campaign-row">
-        <span class="creator">${esc(c.name)}</span>
-        <span class="campaign">${esc(c.workspace_name ?? "Workspace")} · rule set v${esc(
-          c.rule_set_version ?? "—"
-        )}</span>
-        <span class="tag ${c.is_showcase ? "tag-showcase" : "tag-sandbox"}">${esc(
-          c.is_showcase ? "showcase · read only" : "live workspace"
-        )}</span>
-      </div></li>`
+      (c) => `<li><button type="button" class="campaign-row ${c.id === currentCampaignId ? "active" : ""}" data-campaign="${esc(c.id)}">
+        <span class="campaign-card-top"><strong>${esc(c.name)}</strong><span aria-hidden="true">→</span></span>
+        <span>${esc(c.workspace_name ?? "Workspace")} · ${esc(c.is_showcase ? "curated demo" : "private campaign")}</span>
+        <small>${esc(c.rule_set_version ? `Confirmed rule set v${c.rule_set_version}` : "Rules not confirmed")}</small>
+      </button></li>`
     )
     .join("");
+  $("campaign-list").querySelectorAll("[data-campaign]").forEach((button) => button.addEventListener("click", () => {
+    currentCampaignId = button.dataset.campaign;
+    loadCampaigns();
+  }));
   const select = document.querySelector('#submission-form select[name="campaign_id"]');
   const writableCampaigns = campaigns.filter((c) => c.can_submit);
   select.innerHTML = writableCampaigns
@@ -797,6 +789,39 @@ async function loadCampaigns() {
   // opens login in context instead of presenting a disabled dead end.
   $("new-submission").disabled = false;
   $("new-campaign").disabled = false;
+  if (currentCampaignId) await loadCampaignDashboard(currentCampaignId);
+}
+
+function matrixStatus(state, reviewed = false) {
+  const icon = state === "pass" ? "✓" : state === "fail" ? "!" : state === "processing" ? "…" : "?";
+  return `<span class="matrix-status result-${esc(state)}"><span aria-hidden="true">${icon}</span>${esc(STATE_LABEL[state] || state)}${reviewed ? " · reviewed" : ""}</span>`;
+}
+
+async function loadCampaignDashboard(campaignId) {
+  const response = await api(`/api/campaigns/${campaignId}/dashboard`);
+  if (!response.ok) return;
+  const data = await response.json();
+  const requirements = data.requirements;
+  const rows = data.submissions;
+  $("campaign-dashboard").innerHTML = `
+    <header class="dashboard-head">
+      <div><span class="eyebrow">${data.campaign.is_showcase ? "Curated demonstration campaign" : "Campaign workspace"}</span><h2>${esc(data.campaign.name)}</h2><p>${esc(data.campaign.brief || "No brief recorded.")}</p></div>
+      <button id="dashboard-new-submission" class="btn btn-primary" type="button">Add creator submission</button>
+    </header>
+    <div class="dashboard-stats">
+      <div><strong>${data.summary.submission_count}</strong><span>Creator submission${data.summary.submission_count === 1 ? "" : "s"}</span></div>
+      <div><strong>${requirements.length}</strong><span>Confirmed requirements</span></div>
+      <div><strong>${data.summary.unresolved_count}</strong><span>Checks needing attention</span></div>
+    </div>
+    <section class="requirements-overview"><div class="section-heading"><div><span class="eyebrow">Confirmed before review</span><h3>Campaign requirements</h3></div><span class="confirmed-note">✓ Confirmed ${data.campaign.confirmed_at ? new Date(data.campaign.confirmed_at).toLocaleDateString() : ""}</span></div>
+      <ol>${requirements.map((rule) => `<li><span>${rule.ordinal + 1}</span><p><strong>${esc(rule.requirement_text)}</strong><small>${esc(rule.severity)} requirement</small></p></li>`).join("")}</ol>
+    </section>
+    <section class="matrix-section"><div class="section-heading"><div><span class="eyebrow">Review operations</span><h3>Creator × requirement matrix</h3></div><span class="muted-inline">Select any result to open its evidence</span></div>
+      ${rows.length ? `<div class="matrix-scroll"><table class="review-matrix"><thead><tr><th scope="col">Creator / submission</th>${requirements.map((rule) => `<th scope="col"><span>R${rule.ordinal + 1}</span>${esc(rule.requirement_text)}</th>`).join("")}<th scope="col">Decision</th></tr></thead><tbody>${rows.map((row) => `<tr><th scope="row"><button type="button" data-submission="${esc(row.submission_id)}"><strong>${esc(row.creator_reference)}</strong><span>${esc(row.state.replaceAll("_", " "))} · ${row.unresolved_count} unresolved</span></button></th>${row.cells.map((cell) => `<td><button type="button" class="matrix-cell" data-submission="${esc(row.submission_id)}" data-rule="${esc(cell.rule_id)}" data-evidence="${esc(cell.evidence_id || "")}">${matrixStatus(cell.effective_state, cell.reviewed)}</button></td>`).join("")}<td>${row.final_decision ? matrixStatus(row.final_decision === "approve" ? "pass" : row.final_decision === "reject" ? "fail" : "uncertain", true) : `<span class="matrix-status">Not decided</span>`}</td></tr>`).join("")}</tbody></table></div>` : `<p class="empty">No creator submissions yet.</p>`}
+    </section>
+    ${data.campaign.is_showcase ? `<p class="source-disclosure">These are curated demonstration campaigns built from independently published, reuse-permitted creator videos. They are not commissioned brand submissions or endorsements of AdProof.</p>` : ""}`;
+  $("dashboard-new-submission").addEventListener("click", openNewSubmission);
+  $("campaign-dashboard").querySelectorAll("[data-submission]").forEach((button) => button.addEventListener("click", () => selectSubmission(button.dataset.submission, button.dataset.rule || null, button.dataset.evidence || null)));
 }
 
 function openNewSubmission() {
@@ -1119,8 +1144,8 @@ async function renderAnalytics(campaignId) {
                  A cluster here usually means the rule or the retrieval is wrong, not the creator.</div>`
               : ""
           }
-          <div class="muted-inline">submissions: ${p.machine_failures.submission_ids
-            .map((id) => `<code>${esc(id.slice(0, 8))}</code>`).join(" ") || "none"}</div>
+          <div class="analytics-links">${p.machine_failures.submission_ids
+            .map((id) => `<button type="button" class="btn btn-small" data-open-submission="${esc(id)}" data-open-rule="${esc(p.rule_id)}">Open submission</button>`).join(" ") || ""}</div>
         </li>`).join("")
     : `<li class="empty">No failures recorded yet.</li>`;
 
@@ -1159,6 +1184,7 @@ async function renderAnalytics(campaignId) {
             .map(([k, v]) => `<li><strong>${esc(k)}</strong>: ${esc(v)}</li>`).join("")}</ul>`
         : ""
     }`;
+  $("analytics-body").querySelectorAll("[data-open-submission]").forEach((button) => button.addEventListener("click", () => selectSubmission(button.dataset.openSubmission, button.dataset.openRule)));
 }
 
 $("analytics-campaign").addEventListener("change", (e) => renderAnalytics(e.target.value));

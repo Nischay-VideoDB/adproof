@@ -36,3 +36,13 @@ def test_same_app_url_opens_demo_and_write_ctas_escalate_to_login():
     assert '$("new-submission").disabled = false' in js
     assert '$("new-campaign").disabled = false' in js
     assert "showLogin" not in js
+    assert 'class="review-matrix"' in js
+    assert 'class="requirement-rail"' in html
+    assert 'id="evidence-workspace"' in html
+    assert 'styles.css?v=19' in html
+    assert 'app.js?v=19' in html
+    assert "remain marked uncertain after human review" in js
+    assert "if (currentSubmissionId !== requestedSubmissionId) return;" in js
+    assert 'data.playback_mode === "full_source_context"' in js
+    assert "player.currentTime = fullSourceContext ? data.detected_start_seconds : 0" in js
+    assert 'evidence_viewed: evidenceViewed' in js

@@ -342,6 +342,22 @@ class Submission(Base, TimestampMixin):
     )
 
 
+class ShowcaseSourceAttribution(Base, TimestampMixin):
+    """Public reuse credit for a curated showcase submission only."""
+
+    __tablename__ = "showcase_source_attribution"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    submission_id: Mapped[str] = mapped_column(
+        ForeignKey("submission.id"), nullable=False, unique=True, index=True
+    )
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    author: Mapped[str] = mapped_column(String, nullable=False)
+    source_page_url: Mapped[str] = mapped_column(Text, nullable=False)
+    license_name: Mapped[str] = mapped_column(String, nullable=False)
+    license_url: Mapped[str] = mapped_column(Text, nullable=False)
+
+
 class SubmissionVersion(Base, TimestampMixin):
     """Immutable media version. Enforced by DB trigger, not convention."""
 
@@ -546,6 +562,41 @@ class EvidenceItem(Base, TimestampMixin):
         CheckConstraint(
             "end_seconds IS NULL OR end_seconds >= start_seconds",
             name="ck_evidence_interval_ordered",
+        ),
+    )
+
+
+class EvidencePlaybackWindow(Base, TimestampMixin):
+    """Cached provider stream for one bounded evidence viewing window.
+
+    The canonical evidence interval remains on ``EvidenceItem``. These fields
+    describe only the source-bounded context presented to a reviewer.
+    """
+
+    __tablename__ = "evidence_playback_window"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    evidence_item_id: Mapped[str] = mapped_column(
+        ForeignKey("evidence_item.id"), nullable=False, unique=True, index=True
+    )
+    media_asset_id: Mapped[str] = mapped_column(
+        ForeignKey("media_asset.id"), nullable=False, index=True
+    )
+    detected_start_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    detected_end_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    playback_start_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    playback_end_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    provider_stream_url: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "detected_end_seconds >= detected_start_seconds",
+            name="ck_evidence_playback_detected_ordered",
+        ),
+        CheckConstraint(
+            "playback_end_seconds > playback_start_seconds",
+            name="ck_evidence_playback_window_ordered",
         ),
     )
 
