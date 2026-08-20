@@ -44,7 +44,7 @@ def env():
         with eng.connect():
             pass
     except Exception:  # noqa: BLE001
-        pytest.skip(f"Postgres not reachable at {TEST_DB}")
+        pytest.skip("Configured Postgres test database is not reachable")
     eng.dispose()
 
     import adproof.api.main

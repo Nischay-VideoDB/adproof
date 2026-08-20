@@ -4,6 +4,7 @@ The cross-tenant tests are the point: they assert that a user in workspace A
 cannot reach anything in workspace B, including by guessing ids.
 """
 
+import json
 import os
 
 import pytest
@@ -23,7 +24,7 @@ def env():
         with eng.connect():
             pass
     except Exception:  # noqa: BLE001
-        pytest.skip(f"Postgres not reachable at {TEST_DB}")
+        pytest.skip("Configured Postgres test database is not reachable")
     eng.dispose()
 
     import adproof.api.main
@@ -393,9 +394,10 @@ def test_playback_never_returns_a_provider_url(env, monkeypatch):
         provider_calls.append(True)
         return "https://play.videodb.io/v1/clip-secret.m3u8"
 
-    monkeypatch.setattr(
-        "adproof.api.main.VideoDBAdapter.generate_stream_url", generate
-    )
+    class PlaybackAdapter:
+        generate_stream_url = staticmethod(generate)
+
+    monkeypatch.setattr("adproof.api.main.VideoDBAdapter", PlaybackAdapter)
 
     # A cross-tenant caller hitting a COLD cache must be rejected before any
     # provider call or cache write.
@@ -404,7 +406,7 @@ def test_playback_never_returns_a_provider_url(env, monkeypatch):
     assert provider_calls == []
 
     body = a.get(f"/api/evidence/{evidence_id}/playback")
-    assert body.status_code == 200
+    assert body.status_code == 200, body.text
     data = body.json()
     assert "play.videodb.io" not in body.text, "provider URL leaked to the client"
     assert data["playback_url"].startswith("/media/")
@@ -459,6 +461,182 @@ def test_playback_never_returns_a_provider_url(env, monkeypatch):
         session.flush()
         invalid_id = invalid.id
     assert a.get(f"/api/evidence/{invalid_id}/playback").status_code == 409
+
+
+def test_saved_run_uses_one_prepared_window_with_distinct_canonical_markers(
+    env, monkeypatch
+):
+    """Window dedupe must never collapse the evidence item's exact marker."""
+    client, ids = env
+    owner = login(client, "a@example.com", PASSWORD_A)
+    monkeypatch.setenv("ADPROOF_SHOWCASE_WORKSPACE_ID", ids["ws_a"])
+
+    import adproof.db as db
+    from adproof.models import (
+        EvaluationResult,
+        EvidenceItem,
+        MediaAsset,
+        RetrievalRun,
+        Rule,
+        SubmissionVersion,
+    )
+    from adproof import showcase_playback as prepared
+    from adproof.showcase_playback import evidence_spec
+    from adproof.states import (
+        AbsenceClass,
+        ConfidenceBand,
+        EvidenceOrigin,
+        EvidenceRole,
+        Modality,
+        RuleResultState,
+    )
+    from sqlalchemy import select as sa_select
+
+    campaign_id = owner.post(
+        "/api/campaigns", json={**CAMPAIGN, "workspace_id": ids["ws_a"]}
+    ).json()["campaign_id"]
+    submission_id = owner.post(
+        "/api/submissions",
+        json={
+            "campaign_id": campaign_id,
+            "creator_reference": "prepared-window",
+            "idempotency_key": "prepared-window",
+            "source_url": "https://example.invalid/prepared.mp4",
+        },
+    ).json()["submission_id"]
+    with db.session_scope() as session:
+        version = session.scalar(
+            sa_select(SubmissionVersion).where(
+                SubmissionVersion.submission_id == submission_id
+            )
+        )
+        rule = session.scalar(
+            sa_select(Rule).where(Rule.rule_set_version_id == version.rule_set_version_id)
+        )
+        asset = MediaAsset(
+            submission_version_id=version.id,
+            provider_video_id="prepared-video",
+            provider_collection_id="prepared-collection",
+            provider_stream_url="https://play.videodb.io/v1/full.m3u8",
+            duration_seconds=30.0,
+        )
+        session.add(asset)
+        session.flush()
+        run = RetrievalRun(
+            submission_version_id=version.id,
+            rule_id=rule.id,
+            plan_version="v1",
+            query="q",
+            search_type="keyword",
+            index_type="spoken_word",
+            request_params={},
+            counts_toward_measurement=True,
+            role=EvidenceRole.supporting,
+        )
+        session.add(run)
+        session.flush()
+        first = EvidenceItem(
+            retrieval_run_id=run.id,
+            media_asset_id=asset.id,
+            origin=EvidenceOrigin.live_provider,
+            role=EvidenceRole.supporting,
+            modality=Modality.spoken,
+            start_seconds=2.0,
+            end_seconds=3.0,
+            confidence_band=ConfidenceBand.high,
+            provider_snapshot={},
+        )
+        second = EvidenceItem(
+            retrieval_run_id=run.id,
+            media_asset_id=asset.id,
+            origin=EvidenceOrigin.live_provider,
+            role=EvidenceRole.supporting,
+            modality=Modality.spoken,
+            start_seconds=3.0,
+            end_seconds=4.0,
+            confidence_band=ConfidenceBand.high,
+            provider_snapshot={},
+        )
+        session.add_all([first, second])
+        session.flush()
+        session.add(
+            EvaluationResult(
+                submission_version_id=version.id,
+                rule_id=rule.id,
+                evaluator_version="evaluator/v1",
+                state=RuleResultState.passed,
+                absence_class=AbsenceClass.not_applicable,
+                confidence_band=ConfidenceBand.high,
+                explanation="Two cited moments.",
+                evidence_ids=[first.id, second.id],
+            )
+        )
+        first_spec = evidence_spec(ids["ws_a"], asset, first)
+        second_spec = evidence_spec(ids["ws_a"], asset, second)
+        assert first_spec.registry_key == second_spec.registry_key
+        # Saved-run playback is bound to the frozen registry, not the legacy
+        # full-source locator column used by private/live media.
+        asset.provider_stream_url = None
+        first_id, second_id = first.id, second.id
+        asset_id = asset.id
+
+    manifest_hash = prepared._key([first_spec.registry_key])
+    monkeypatch.setattr(prepared, "PINNED_SHOWCASE_MANIFEST_HASH", manifest_hash)
+    monkeypatch.setattr(prepared, "PINNED_SHOWCASE_ENTRY_COUNT", 1)
+    entry = prepared.FrozenPlaybackEntry(
+        registry_key=first_spec.registry_key, workspace_id=ids["ws_a"],
+        media_asset_id=asset_id, playback_kind="evidence",
+        playback_start_seconds=0.0, playback_end_seconds=10.0,
+        provider_stream_url="https://play.videodb.io/v1/prepared.m3u8",
+        provider_binding_hash=first_spec.provider_binding_hash,
+    )
+    registry_digest = prepared._registry_digest([entry])
+    monkeypatch.setattr(prepared, "PINNED_SHOWCASE_REGISTRY_DIGEST", registry_digest)
+    monkeypatch.setenv(
+        prepared.REGISTRY_ENV,
+        json.dumps({
+            "v": 1, "manifest_hash": manifest_hash,
+            "registry_digest": registry_digest,
+            "entries": [{
+                "k": entry.registry_key, "w": entry.workspace_id,
+                "a": entry.media_asset_id, "t": entry.playback_kind,
+                "s": entry.playback_start_seconds, "e": entry.playback_end_seconds,
+                "u": entry.provider_stream_url, "b": entry.provider_binding_hash,
+            }],
+        }, separators=(",", ":"), sort_keys=True),
+    )
+    prepared._parse_registry.cache_clear()
+
+    calls = []
+    monkeypatch.setattr(
+        "adproof.api.main.VideoDBAdapter.generate_stream_url",
+        lambda *_a, **_k: calls.append(True),
+    )
+    first_body = owner.get(f"/api/evidence/{first_id}/playback")
+    second_body = owner.get(f"/api/evidence/{second_id}/playback")
+    assert first_body.status_code == second_body.status_code == 200
+    assert calls == []
+    assert f"p={first_spec.registry_key}" in first_body.json()["playback_url"]
+    assert f"p={first_spec.registry_key}" in second_body.json()["playback_url"]
+    assert first_body.json()["detected_start_seconds"] == 2.0
+    assert second_body.json()["detected_start_seconds"] == 3.0
+    assert first_body.json()["marker_start_seconds"] == 2.0
+    assert second_body.json()["marker_start_seconds"] == 3.0
+    # A prepared URL already issued to the browser is still rejected if the
+    # server-side media asset is rebound before the proxy request arrives.
+    with db.session_scope() as session:
+        rebound_asset = session.get(MediaAsset, asset_id)
+        rebound_asset.provider_video_id = "replacement-provider-video"
+    assert owner.get(first_body.json()["playback_url"]).status_code == 404
+    # An absent/malformed server-only registry fails closed with a friendly
+    # service response, never a 500 or a provider-generation fallback.
+    monkeypatch.delenv(prepared.REGISTRY_ENV)
+    monkeypatch.delenv("ADPROOF_SHOWCASE_WORKSPACE_ID")
+    monkeypatch.setattr(prepared, "PINNED_SHOWCASE_WORKSPACE_ID", ids["ws_a"])
+    prepared._parse_registry.cache_clear()
+    assert owner.get(f"/api/evidence/{first_id}/playback").status_code == 503
+    assert owner.get(f"/api/submissions/{submission_id}/playback").status_code == 503
+    assert calls == []
 
 
 def test_media_proxy_rejects_a_forged_upstream_url(env):

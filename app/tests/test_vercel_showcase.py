@@ -1,4 +1,4 @@
-"""Vercel serves the real app and keeps the prepared walkthrough additive."""
+"""Vercel serves the real app and retires the legacy walkthrough."""
 
 import json
 from pathlib import Path
@@ -19,41 +19,16 @@ def test_vercel_deploys_fastapi_with_bounded_duration():
 
 
 def test_favicon_is_explicitly_linked_and_available_from_the_static_output():
-    page = (PUBLIC / "examples.html").read_text()
+    page = (PUBLIC / "app" / "index.html").read_text()
     icon = PUBLIC / "adproof-mark.svg"
-    assert 'rel="icon" href="/adproof-mark.svg" type="image/svg+xml"' in page
-    assert 'rel="shortcut icon" href="/favicon.ico"' in page
+    assert 'rel="icon"' in page
     assert icon.is_file()
     assert "<title id=\"title\">AdProof</title>" in icon.read_text()
 
 
-def test_prepared_review_covers_the_four_documented_outcome_shapes():
-    page = (PUBLIC / "examples.html").read_text()
-    scenarios = (PUBLIC / "prepared-scenarios.js").read_text()
-    for label in (
-        "A - requirements observed",
-        "B - disclosure needs review",
-        "C - blocking claim finding",
-        "D - duration is uncertain",
-    ):
-        assert label in scenarios
-    assert "Representative data - read only" in page
-    assert "write to a database" in page
-
-
-def test_prepared_showcase_itself_has_no_provider_or_mutation_path():
-    combined = "\n".join(path.read_text() for path in PUBLIC.iterdir() if path.is_file())
-    for forbidden in (
-        "VIDEODB_API_KEY",
-        "ADPROOF_DATABASE_URL",
-        "fetch(",
-        "XMLHttpRequest",
-        "WebSocket",
-        "FormData",
-        "/api/submissions",
-        "<input",
-        "<form",
-    ):
-        assert forbidden not in combined
-    assert "localReviews" in combined
-    assert "localReviews.clear" in combined
+def test_legacy_examples_are_not_a_public_static_page():
+    config = json.loads((APP_ROOT / "vercel.json").read_text())
+    redirects = {(item["source"], item["destination"]) for item in config["rewrites"]}
+    assert ("/examples", "/app") in redirects
+    assert ("/examples.html", "/app") in redirects
+    assert not (PUBLIC / "examples.html").exists()

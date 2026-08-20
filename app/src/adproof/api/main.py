@@ -15,8 +15,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Response, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import func, select, text
@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 
 from ..audit import events_for_subject, record_audit
 from ..config import settings
-from ..db import get_session, init_db
+from ..db import SessionLocal, get_session, init_db
 from ..security import hash_password, verify_password
 from ..orchestrator.worker import run_version_until_idle
 from .auth import (
@@ -70,6 +70,15 @@ from ..revisions import EvidenceRef, RuleFacts, draft_revisions
 from ..orchestrator.steps import dedupe_key
 from ..providers.errors import ProviderError
 from ..providers.videodb_adapter import VideoDBAdapter
+from ..showcase_playback import (
+    PreparedPlaybackError,
+    assert_showcase_release_ready,
+    clip_window,
+    evidence_spec,
+    find_prepared_entry,
+    full_source_spec,
+    is_saved_run_workspace,
+)
 from ..states import (
     CAN_DECIDE_FINAL,
     CAN_MANAGE_CAMPAIGNS,
@@ -259,6 +268,14 @@ def _is_measured_evidence(
 @app.on_event("startup")
 def _startup() -> None:
     init_db()
+    if os.getenv("ADPROOF_ENV") == "production":
+        with SessionLocal() as session:
+            try:
+                assert_showcase_release_ready(
+                    session, os.getenv("ADPROOF_SHOWCASE_WORKSPACE_ID")
+                )
+            except PreparedPlaybackError as exc:
+                raise RuntimeError("Saved-run release gate failed.") from exc
 
 
 # --------------------------------------------------------------------------
@@ -1212,6 +1229,9 @@ def get_report(
     )
 
     rule_views = []
+    is_saved_workspace = (
+        submission.workspace_id == os.getenv("ADPROOF_SHOWCASE_WORKSPACE_ID")
+    )
     for rule in rules:
         result = session.scalar(
             select(EvaluationResult).where(
@@ -1230,6 +1250,19 @@ def get_report(
         run_views = []
         evidence_views = []
         result_evidence_ids = set(result.evidence_ids or []) if result else set()
+        review_rows = list(
+            session.scalars(
+                select(RuleReview)
+                .where(
+                    RuleReview.submission_version_id == version.id,
+                    RuleReview.rule_id == rule.id,
+                )
+                .order_by(RuleReview.created_at)
+            )
+        )
+        cited_evidence_ids = set(result_evidence_ids)
+        for review in review_rows:
+            cited_evidence_ids.update(review.evidence_viewed or [])
         for run in runs:
             run_view = {
                     "id": run.id,
@@ -1281,6 +1314,8 @@ def get_report(
                     )
                 else:
                     evidence_kind = "context"
+                if is_saved_workspace and item.id not in cited_evidence_ids:
+                    continue
                 evidence_views.append(
                     {
                         "id": item.id,
@@ -1440,14 +1475,7 @@ def get_report(
                         "reviewer": rv.reviewer_email,
                         "at": rv.created_at.isoformat(),
                     }
-                    for rv in session.scalars(
-                        select(RuleReview)
-                        .where(
-                            RuleReview.submission_version_id == version.id,
-                            RuleReview.rule_id == rule.id,
-                        )
-                        .order_by(RuleReview.created_at)
-                    )
+                    for rv in review_rows
                 ],
                 "result": (
                     {
@@ -1655,6 +1683,22 @@ def submission_playback(
     )
     if asset is None or not asset.provider_video_id:
         raise HTTPException(409, "No playable source is available yet.")
+    is_public_saved_run = is_saved_run_workspace(submission.workspace_id)
+    if is_public_saved_run:
+        try:
+            spec = full_source_spec(submission.workspace_id, asset)
+            entry = find_prepared_entry(spec)
+        except PreparedPlaybackError as exc:
+            raise HTTPException(
+                503, "This saved video is temporarily unavailable. Try again shortly."
+            ) from exc
+        if entry is None:
+            raise HTTPException(
+                503, "This saved video is temporarily unavailable. Try again shortly."
+            )
+        return issue_playback(
+            session, principal, asset.id, prepared_registry_key=entry.registry_key
+        )
     try:
         asset.provider_stream_url = VideoDBAdapter().generate_stream_url(
             asset.provider_video_id,
@@ -1666,28 +1710,6 @@ def submission_playback(
         ) from exc
     session.commit()
     return issue_playback(session, principal, asset.id)
-
-
-def _clip_window(
-    detected_start: float,
-    detected_end: float,
-    source_duration: float,
-    target_seconds: float = 10.0,
-) -> tuple[float, float]:
-    """Pad a short canonical interval without changing or cropping it."""
-    start = detected_start
-    end = detected_end
-    if end - start >= target_seconds:
-        return start, end
-    missing = target_seconds - (end - start)
-    playback_start = max(0.0, start - missing / 2)
-    playback_end = min(source_duration, end + missing / 2)
-    if playback_end - playback_start < target_seconds:
-        if playback_start == 0.0:
-            playback_end = min(source_duration, target_seconds)
-        else:
-            playback_start = max(0.0, source_duration - target_seconds)
-    return playback_start, playback_end
 
 
 @app.get("/api/evidence/{evidence_id}/playback")
@@ -1712,7 +1734,7 @@ def evidence_playback(
     asset = authorized_media_asset(
         session, principal, item.media_asset_id, CAN_READ
     )
-    if not asset or not asset.provider_stream_url or not asset.provider_video_id:
+    if not asset or not asset.provider_video_id:
         raise HTTPException(
             409,
             "No playable stream is recorded for this evidence. The media may not "
@@ -1721,11 +1743,57 @@ def evidence_playback(
     detected_end = item.end_seconds if item.end_seconds is not None else item.start_seconds
     if item.start_seconds < 0 or detected_end < item.start_seconds:
         raise HTTPException(409, "Evidence timestamps are invalid and require review.")
+    version = session.get(SubmissionVersion, asset.submission_version_id)
+    submission = session.get(Submission, version.submission_id) if version else None
+    is_public_saved_run = bool(
+        submission and is_saved_run_workspace(submission.workspace_id)
+    )
+    if is_public_saved_run:
+        retrieval_run = session.get(RetrievalRun, item.retrieval_run_id)
+        result = session.scalar(
+            select(EvaluationResult).where(
+                EvaluationResult.submission_version_id == version.id,
+                EvaluationResult.rule_id == retrieval_run.rule_id,
+            )
+        ) if retrieval_run else None
+        cited_ids = set(result.evidence_ids or []) if result else set()
+        if retrieval_run:
+            for review in session.scalars(
+                select(RuleReview).where(
+                    RuleReview.submission_version_id == version.id,
+                    RuleReview.rule_id == retrieval_run.rule_id,
+                )
+            ):
+                cited_ids.update(review.evidence_viewed or [])
+        if item.id not in cited_ids:
+            raise HTTPException(404, "Evidence not found")
     if not asset.duration_seconds:
         # Preserve the old, authorized playback capability when a provider did
         # not report duration. Without a trustworthy source boundary we cannot
         # generate an honest padded clip, so return full-source context.
-        playback = issue_playback(session, principal, asset.id)
+        if is_public_saved_run:
+            try:
+                spec = full_source_spec(submission.workspace_id, asset)
+                entry = find_prepared_entry(spec)
+            except PreparedPlaybackError as exc:
+                raise HTTPException(
+                    503, "This saved video is temporarily unavailable. Try again shortly."
+                ) from exc
+            if entry is None:
+                raise HTTPException(
+                    503, "This saved video is temporarily unavailable. Try again shortly."
+                )
+            playback = issue_playback(
+                session, principal, asset.id, prepared_registry_key=entry.registry_key
+            )
+        else:
+            if not asset.provider_stream_url:
+                raise HTTPException(
+                    409,
+                    "No playable stream is recorded for this evidence. The media may not "
+                    "have finished ingesting.",
+                )
+            playback = issue_playback(session, principal, asset.id)
         return {
             **playback,
             "detected_start_seconds": item.start_seconds,
@@ -1743,9 +1811,45 @@ def evidence_playback(
     # Preserve the canonical interval. A sub-frame provider rounding delta is
     # handled by treating the canonical end as the effective source boundary.
     effective_duration = max(asset.duration_seconds, detected_end)
-    playback_start, playback_end = _clip_window(
+    playback_start, playback_end = clip_window(
         item.start_seconds, detected_end, effective_duration
     )
+    if is_public_saved_run:
+        try:
+            spec = evidence_spec(submission.workspace_id, asset, item)
+            entry = find_prepared_entry(spec)
+        except PreparedPlaybackError as exc:
+            raise HTTPException(
+                503, "This saved evidence clip is temporarily unavailable."
+            ) from exc
+        if entry is None:
+            raise HTTPException(
+                503, "This saved evidence clip is temporarily unavailable. Try again shortly."
+            )
+        playback = issue_playback(
+            session,
+            principal,
+            item.media_asset_id,
+            prepared_registry_key=entry.registry_key,
+        )
+        return {
+            **playback,
+            "detected_start_seconds": item.start_seconds,
+            "detected_end_seconds": detected_end,
+            "playback_start_seconds": entry.playback_start_seconds,
+            "playback_end_seconds": entry.playback_end_seconds,
+            "marker_start_seconds": (
+                item.start_seconds - entry.playback_start_seconds
+            ),
+            "marker_end_seconds": (
+                detected_end - entry.playback_start_seconds
+            ),
+            "showing_surrounding_context": (
+                entry.playback_start_seconds != item.start_seconds
+                or entry.playback_end_seconds != detected_end
+            ),
+            "playback_mode": "bounded_context",
+        }
     # Serialize cold-cache creation on the immutable evidence row. The row is
     # never changed; the lock only prevents concurrent provider calls and a
     # race on the playback-window unique constraint.
@@ -1844,10 +1948,9 @@ if WEB_DIR.exists():
         )
 
     @app.get("/examples")
-    def prepared_examples() -> FileResponse:
-        return FileResponse(
-            Path(__file__).resolve().parents[3] / "public" / "examples.html"
-        )
+    @app.get("/examples.html")
+    def retired_examples() -> RedirectResponse:
+        return RedirectResponse("/app", status_code=308)
 
 
 # --------------------------------------------------------------------------

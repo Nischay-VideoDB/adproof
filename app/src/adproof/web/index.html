@@ -8,11 +8,11 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/styles.css?v=19" />
+  <link rel="stylesheet" href="/static/styles.css?v=21" />
 </head>
 <body>
 
-<!-- Login is an in-context escalation from the public showcase. -->
+<!-- Login keeps the current saved-run context while opening private work. -->
 <dialog id="login-dialog" class="dialog login-dialog" aria-labelledby="login-title">
   <form id="login-form" class="login-card" autocomplete="on">
     <div class="brand"><span class="brand-mark">▮</span> AdProof</div>
@@ -28,10 +28,10 @@
     <p id="login-error" class="alert alert-error" hidden></p>
     <p class="login-note">
       Accounts are provisioned by an administrator. There is no self-service
-      signup in this build.
+      signup here.
     </p>
     <div class="dialog-actions">
-      <button id="login-cancel" type="button" class="btn">Continue viewing demo</button>
+      <button id="login-cancel" type="button" class="btn">Continue with saved runs</button>
       <button type="submit" class="btn btn-primary">Log in</button>
     </div>
   </form>
@@ -42,9 +42,9 @@
   <header class="topbar">
     <div class="brand"><span class="brand-mark">▮</span> AdProof</div>
     <nav class="tabs">
-      <button class="tab active" role="tab" aria-selected="true" data-view="campaigns">Campaigns</button>
-      <button class="tab" role="tab" aria-selected="false" data-view="review">Submission review</button>
-      <button class="tab" data-view="analytics">Analytics</button>
+      <button class="tab active" role="tab" aria-selected="true" data-view="review">Submissions</button>
+      <button class="tab" role="tab" aria-selected="false" data-view="campaigns">Campaigns</button>
+      <button id="analytics-tab" class="tab" role="tab" aria-selected="false" data-view="analytics">Analytics</button>
     </nav>
     <div class="topbar-right">
       <span id="who" class="who"></span>
@@ -52,64 +52,37 @@
     </div>
   </header>
 
-  <div id="disclosure" class="disclosure" hidden>
-    <button id="disclosure-toggle" class="disclosure-toggle">
-      What this build does and does not do ▾
-    </button>
-    <ul id="disclosure-list" hidden></ul>
-  </div>
-
-  <section id="workspace-banner" class="workspace-banner" hidden>
-    <div>
-      <span class="eyebrow">Evidence-backed creator review</span>
-      <strong>Verify every submission against the campaign brief.</strong>
-      <p id="workspace-banner-copy"></p>
-    </div>
-    <div class="workspace-legend">
-      <span class="tag tag-showcase">Showcase · read only</span>
-      <span id="workspace-capability" class="tag tag-sandbox">Log in to create</span>
-    </div>
-  </section>
-
   <!-- campaigns -->
-  <main id="view-campaigns" class="view view-campaigns">
+  <main id="view-campaigns" class="view view-campaigns" hidden>
     <section class="campaign-intro">
       <div>
-        <span class="eyebrow">Campaign brief → exact video evidence</span>
-        <h1>Know what passed, what needs changes, and the moment behind it.</h1>
-        <p>AdProof turns human-confirmed campaign requirements into a review workspace for every creator submission. The machine gathers proof; a person owns the decision.</p>
+        <span class="eyebrow">Campaign portfolio</span>
+        <h1>Compare every submission against the confirmed brief.</h1>
       </div>
       <button id="new-campaign" class="btn btn-primary">New campaign</button>
     </section>
     <section class="campaign-browser">
-      <div class="campaign-picker">
-        <div class="section-heading"><div><span class="eyebrow">Campaigns</span><h2>Choose a campaign</h2></div></div>
-        <ul id="campaign-list" class="campaign-list"></ul>
-        <p id="campaigns-empty" class="empty" hidden>No campaigns yet. Create one and confirm its requirements before adding submissions.</p>
-      </div>
-      <div id="campaign-dashboard" class="campaign-dashboard">
+      <div class="campaign-toolbar"><label for="campaign-picker">Campaign</label><select id="campaign-picker" class="inline-select"></select></div>
+      <p id="campaigns-empty" class="empty" hidden>No campaigns yet. Create one and confirm its requirements before adding submissions.</p>
+      <div id="campaign-dashboard" class="campaign-dashboard" aria-live="polite">
         <p class="empty placeholder">Select a campaign to see its brief, confirmed requirements, and creator review matrix.</p>
       </div>
     </section>
   </main>
 
   <!-- review -->
-  <main id="view-review" class="view" hidden>
-    <section class="panel sidebar">
-      <div class="panel-head">
-        <div><span class="eyebrow">Review queue</span><h2>Submissions</h2></div>
-        <button id="new-submission" class="btn btn-small">New submission</button>
+  <main id="view-review" class="view view-single">
+    <section class="panel saved-runs-panel" id="report-panel">
+      <div class="run-toolbar">
+        <label for="submission-picker"><span>Saved verification run</span><select id="submission-picker" class="inline-select"></select></label>
+        <button id="new-submission" class="btn btn-primary">New submission</button>
       </div>
-      <ul id="submission-list" class="submission-list"></ul>
       <p id="submissions-empty" class="empty" hidden>
         No submissions yet. Create a campaign with requirements, then submit a
         creator video to verify against it.
       </p>
-    </section>
-
-    <section class="panel" id="report-panel">
       <p id="report-placeholder" class="empty placeholder">
-        Select a submission to review each requirement beside its exact evidence.
+        Choose a saved run to inspect its requirement evidence.
       </p>
 
       <div id="report-body" hidden>
@@ -121,35 +94,33 @@
           <span id="submission-state" class="state-chip"></span>
           <button id="retry-btn" class="btn" hidden>Retry failed stages</button>
         </div>
-        <div id="report-access" class="report-access" hidden></div>
-
         <div id="submission-error" class="alert alert-error" hidden></div>
+        <div id="submission-summary" class="summary-strip"></div>
+        <details id="source-attribution" class="source-license" hidden><summary>Source &amp; reuse terms</summary><div></div></details>
 
-        <div class="review-workspace">
-          <aside class="requirement-rail">
-            <div class="section-heading"><div><span class="eyebrow">Confirmed brief</span><h3>Requirements</h3></div></div>
-            <div id="rules"></div>
-          </aside>
-          <section id="requirement-detail" class="requirement-detail"></section>
-          <aside id="evidence-workspace" class="evidence-workspace">
-            <span class="eyebrow">Evidence for this requirement</span>
-            <h3 id="evidence-title">Select a requirement</h3>
+        <section id="evidence-workspace" class="evidence-workspace" aria-live="polite">
+          <div class="evidence-toolbar">
+            <label for="requirement-picker"><span>Requirement</span><select id="requirement-picker" class="inline-select"></select></label>
+            <button id="full-source-btn" class="btn" type="button">View full source</button>
+          </div>
+          <div id="requirement-content">
+            <div class="requirement-head">
+              <div><span id="requirement-number" class="eyebrow"></span><h2 id="evidence-title">Select a requirement</h2></div>
+              <span id="requirement-state" class="result-chip"></span>
+            </div>
+            <div id="requirement-measurement" class="measurement-card"></div>
+            <div class="player-shell">
             <video id="player" controls playsinline preload="metadata"></video>
             <div id="detection-marker" class="detection-marker" hidden><span></span></div>
-            <p id="player-note" class="note">Choose a requirement to inspect its exact supporting moment.</p>
+            <p id="player-note" class="note">Choose an evidence moment to play it.</p>
+            </div>
             <div id="evidence-list"></div>
-          </aside>
-        </div>
+            <div id="review-controls"></div>
+          </div>
+        </section>
 
         <section class="decision-section"><div class="section-heading"><div><span class="eyebrow">Human decision</span><h3>Review outcome</h3></div></div><div id="adjudication-slot"></div></section>
 
-        <details class="secondary-disclosure">
-          <summary>Processing and audit details</summary>
-          <div id="media-info" class="media-info"></div>
-          <button id="full-source-btn" class="btn btn-small" type="button">Open full source</button>
-          <ul id="stages" class="stages"></ul>
-          <div id="audit-list"></div>
-        </details>
       </div>
     </section>
   </main>
@@ -172,9 +143,9 @@
   <form id="campaign-form" method="dialog">
     <span class="eyebrow">Step 1 of 2</span>
     <h3>Create a campaign and confirm its rules</h3>
-    <p class="note">Paste the agreed brief, then author the measurable checks below. AdProof does not infer obligations from the brief in this build; you confirm every active requirement.</p>
+    <p class="note">Paste the agreed brief, then author and confirm each measurable requirement below.</p>
     <label>Campaign name<input name="campaign_name" required /></label>
-    <label>Campaign brief (kept verbatim as an audit artifact)
+    <label>Campaign brief
       <textarea name="brief_text" rows="3" required></textarea></label>
 
     <div class="rules-head">
@@ -202,13 +173,10 @@
     <label>Creator reference<input name="creator_reference" required placeholder="creator-001" /></label>
     <label id="file-upload-field">Video file
       <input name="file" type="file" accept="video/mp4,video/quicktime,.mp4,.mov,.m4v,.webm,.mkv" /></label>
-    <label>Video URL (must be publicly fetchable by VideoDB)
+    <label>Video URL
       <input name="source_url" type="url" placeholder="https://…/video.mp4" /></label>
-    <p id="input-guidance" class="note">
-      Processing is metered by VideoDB. Visual indexing samples a frame every
-      2 seconds, so cost and time scale with video length.
-    </p>
-    <p id="submission-error" class="alert alert-error" hidden></p>
+    <p id="input-guidance" class="note">Use a durable public video URL.</p>
+    <p id="submission-form-error" class="alert alert-error" hidden></p>
     <div class="dialog-actions">
       <button type="button" class="btn" data-close>Cancel</button>
       <button type="submit" class="btn btn-primary">Submit for verification</button>
@@ -285,6 +253,6 @@
 </dialog>
 
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
-  <script src="/static/app.js?v=19"></script>
+  <script src="/static/app.js?v=21"></script>
 </body>
 </html>

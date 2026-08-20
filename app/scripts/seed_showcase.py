@@ -54,9 +54,8 @@ BIOSSANCE = Demo(
     "Create a concise tutorial for Squalane + Marine Algae Eye Cream. Name the "
     "product, show its packaging and texture, explain the ring-finger technique, "
     "demonstrate gentle under-eye application, and include a clear in-video "
-    "advertising or affiliate disclosure at the opening. This is a fictional "
-    "curated brief applied to an independently published reuse-permitted video; "
-    "it was not commissioned by Biossance.",
+    "advertising or affiliate disclosure at the opening. Keep the tutorial "
+    "clear, concise, and easy to follow at normal playback speed.",
     (
         {"rule_type": "required_spoken_phrase", "requirement_text": "Say ‘Squalane and Marine Algae Eye Cream’ at least once.", "source_brief_excerpt": "name the product", "phrase": "Squalane and Marine Algae Eye Cream", "min_occurrences": 1, "absence_policy": "uncertain", "severity": "required"},
         {"rule_type": "required_spoken_phrase", "requirement_text": "Explain that the product is applied with the ring fingers.", "source_brief_excerpt": "explain the ring-finger technique", "phrase": "ring fingers", "min_occurrences": 1, "absence_policy": "uncertain", "severity": "required"},
@@ -84,8 +83,8 @@ NANK = Demo(
     "Disclose the supplied relationship at the opening, name the model, keep "
     "the product clearly visible, show the package reveal, then show how it is "
     "worn during swimming, showering, jogging, or exercise. Avoid unqualified "
-    "underwater or waterproof guarantees. This is a fictional curated "
-    "brief, not instructions from the creator or Nank/Naenka.",
+    "underwater or waterproof guarantees. Make the product details and "
+    "demonstration sequence easy to follow at normal playback speed.",
     (
         {"rule_type": "required_spoken_phrase", "requirement_text": "Say ‘Nank Runner Diver2’ at least once.", "source_brief_excerpt": "name the model", "phrase": "Nank Runner Diver2", "min_occurrences": 1, "absence_policy": "uncertain", "severity": "required"},
         {"rule_type": "forbidden_spoken_claim", "requirement_text": "Do not claim that Bluetooth works underwater, that the product is waterproof at any depth, or that it is completely waterproof.", "source_brief_excerpt": "avoid unqualified underwater or waterproof guarantees", "forbidden_phrases": ["Bluetooth works underwater", "waterproof at any depth", "completely waterproof"], "absence_policy": "fail_when_coverage_complete", "severity": "blocking"},
@@ -137,6 +136,34 @@ def _campaign_id(client, workspace_id: str, demo: Demo) -> str:
     campaigns = client.get("/api/campaigns").json()
     existing = next((c["id"] for c in campaigns if c["workspace_id"] == workspace_id and c["name"] == demo.campaign_name), None)
     if existing:
+        # Brief snapshots are immutable. Copy corrections become a new version;
+        # the campaign/report projections already select the latest snapshot.
+        from sqlalchemy import select
+        from adproof.audit import record_audit
+        from adproof.db import session_scope
+        from adproof.models import BriefVersion
+        with session_scope() as session:
+            latest = session.scalar(
+                select(BriefVersion)
+                .where(BriefVersion.campaign_id == existing)
+                .order_by(BriefVersion.version.desc())
+            )
+            if latest is None or latest.original_text != demo.brief:
+                next_version = (latest.version if latest else 0) + 1
+                session.add(BriefVersion(
+                    campaign_id=existing,
+                    version=next_version,
+                    original_text=demo.brief,
+                ))
+                record_audit(
+                    session,
+                    workspace_id=workspace_id,
+                    category="campaign.brief_version_added",
+                    subject_type="campaign",
+                    subject_id=existing,
+                    actor=SEEDER_EMAIL,
+                    detail={"version": next_version, "reason": "client-facing brief copy correction"},
+                )
         return existing
     response = client.post("/api/campaigns", json={**demo.campaign_payload, "workspace_id": workspace_id})
     if response.status_code != 201:

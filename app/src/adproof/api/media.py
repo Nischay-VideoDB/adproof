@@ -32,6 +32,11 @@ from ..security import (
     read_media_token,
     seal_upstream_url,
 )
+from ..showcase_playback import (
+    PreparedPlaybackError,
+    prepared_registry,
+    provider_binding_hash,
+)
 from ..states import CAN_READ
 from .auth import Principal, authorized_media_asset, current_principal
 
@@ -41,7 +46,7 @@ router = APIRouter(prefix="/media", tags=["media"])
 
 #: The ONLY hosts this proxy will fetch from. Verified against the live service:
 #: manifests and segments are served from play.videodb.io.
-_ALLOWED_HOSTS = frozenset({"play.videodb.io"})
+_ALLOWED_HOSTS = frozenset({"play.videodb.io", "stream.videodb.io"})
 
 #: Manifests are small; segments stream. Bounded so a hostile upstream cannot
 #: exhaust memory.
@@ -57,6 +62,9 @@ def _check_host(url: str) -> str:
         raise HTTPException(403, "Upstream host is not allowed.")
     if urlparse(url).scheme != "https":
         raise HTTPException(403, "Upstream must be HTTPS.")
+    path = urlparse(url).path
+    if not re.fullmatch(r"/[A-Za-z0-9._~!$&'()*+,;=:@%/-]+", path) or ".." in path.split("/"):
+        raise HTTPException(403, "Upstream path is not allowed.")
     return url
 
 
@@ -141,16 +149,34 @@ def master_playlist(
     token: str,
     request: Request,
     e: str | None = Query(default=None),
+    p: str | None = Query(default=None),
     principal: Principal = Depends(current_principal),
     session: Session = Depends(get_session),
 ) -> Response:
     asset = _grant(token, session, principal)
+    if e and p:
+        raise HTTPException(400, "Choose one playback reference.")
     playback_url = asset.provider_stream_url
     if e:
         window = session.get(EvidencePlaybackWindow, e)
         if window is None or window.media_asset_id != asset.id:
             raise HTTPException(404, "Evidence playback window not found.")
         playback_url = window.provider_stream_url
+    if p:
+        try:
+            entry = prepared_registry().get(p)
+        except PreparedPlaybackError as exc:
+            raise HTTPException(404, "Prepared playback is unavailable.") from exc
+        current_binding = provider_binding_hash(
+            asset.provider_video_id or "", asset.provider_collection_id
+        )
+        if (
+            entry is None
+            or entry.media_asset_id != asset.id
+            or entry.provider_binding_hash != current_binding
+        ):
+            raise HTTPException(404, "Prepared playback is unavailable.")
+        playback_url = entry.provider_stream_url
     if not playback_url:
         raise HTTPException(409, "No playable stream is recorded for this media.")
     # Sourced from our own database, so only the host allowlist applies.
@@ -240,6 +266,7 @@ def issue_playback(
     principal: Principal,
     media_asset_id: str,
     evidence_window_id: str | None = None,
+    prepared_registry_key: str | None = None,
 ) -> dict[str, str]:
     """Authorize the caller for one asset and return proxied playback details.
 
@@ -251,8 +278,12 @@ def issue_playback(
     authorized_media_asset(session, principal, media_asset_id, CAN_READ)
     token = issue_media_token(principal.user.id, media_asset_id)
     playback_url = f"/media/{token}/master.m3u8"
+    if evidence_window_id and prepared_registry_key:
+        raise ValueError("Choose one playback reference.")
     if evidence_window_id:
         playback_url += "?" + urlencode({"e": evidence_window_id})
+    elif prepared_registry_key:
+        playback_url += "?" + urlencode({"p": prepared_registry_key})
     return {
         "playback_url": playback_url,
         "access_control": "adproof_proxied_short_lived_token",

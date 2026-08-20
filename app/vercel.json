@@ -14,7 +14,11 @@
     },
     {
       "source": "/examples",
-      "destination": "/examples.html"
+      "destination": "/app"
+    },
+    {
+      "source": "/examples.html",
+      "destination": "/app"
     },
     {
       "source": "/app",

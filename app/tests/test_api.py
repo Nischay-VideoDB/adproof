@@ -18,11 +18,11 @@ PASSWORD = "test-password-1234"
 
 
 def test_clip_window_boundaries_preserve_the_canonical_interval():
-    from adproof.api.main import _clip_window
+    from adproof.showcase_playback import clip_window
 
-    assert _clip_window(0.0, 2.0, 6.0) == (0.0, 6.0)
-    assert _clip_window(18.0, 20.0, 20.0) == (10.0, 20.0)
-    assert _clip_window(3.0, 15.0, 20.0) == (3.0, 15.0)
+    assert clip_window(0.0, 2.0, 6.0) == (0.0, 6.0)
+    assert clip_window(18.0, 20.0, 20.0) == (10.0, 20.0)
+    assert clip_window(3.0, 15.0, 20.0) == (3.0, 15.0)
 
 
 def test_evidence_dedupe_requires_temporal_and_semantic_identity():
@@ -62,7 +62,7 @@ def client():
         with eng.connect():
             pass
     except Exception:  # noqa: BLE001
-        pytest.skip(f"Postgres not reachable at {TEST_DB}")
+        pytest.skip("Configured Postgres test database is not reachable")
     eng.dispose()
 
     import adproof.api.main

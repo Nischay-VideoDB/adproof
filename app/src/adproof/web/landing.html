@@ -7,7 +7,7 @@
 <title>AdProof - Proof the brief was followed</title>
 <meta name="description" content="AdProof checks creator videos against agreed campaign requirements and returns the timestamped moment behind every result.">
 <meta property="og:title" content="AdProof">
-<meta property="og:description" content="Timestamped evidence for every campaign requirement. Deterministic measurement, honest uncertainty, full audit trail.">
+<meta property="og:description" content="Timestamped evidence for every campaign requirement, with honest uncertainty and human review.">
 <meta property="og:type" content="website">
 <meta name="twitter:card" content="summary_large_image">
 
@@ -95,8 +95,7 @@ figure img { border-radius:12px; }
         <i class="ph ph-sun hidden dark:inline text-[18px]" aria-hidden="true"></i>
         <i class="ph ph-moon inline dark:hidden text-[18px]" aria-hidden="true"></i>
       </button>
-      <a href="/examples" class="text-[14px] t2 px-3 py-2 hover:text-[color:var(--text)] transition-colors">Prepared examples</a>
-      <a href="/app" class="btn btn-primary text-[14px] font-medium px-4 py-2">Open showcase</a>
+      <a href="/app" class="btn btn-primary text-[14px] font-medium px-4 py-2">Open saved runs</a>
     </div>
   </nav>
 </header>
@@ -114,7 +113,7 @@ figure img { border-radius:12px; }
       Every requirement checked against the video, with the exact timestamp behind each result.
     </p>
     <div class="mt-9 flex flex-wrap gap-3">
-      <a href="/app" class="btn btn-primary font-medium px-6 py-3">Open the live showcase</a>
+      <a href="/app" class="btn btn-primary font-medium px-6 py-3">Open saved runs</a>
       <a href="#how" class="btn btn-ghost font-medium px-6 py-3">How it works</a>
     </div>
   </div>
@@ -155,7 +154,7 @@ figure img { border-radius:12px; }
 <section id="how" class="border-t hair" style="background:var(--surface)">
   <div class="max-w-shell mx-auto px-6 py-24 md:py-28">
     <h2 class="reveal text-3xl md:text-4xl font-semibold tracking-tight max-w-[20ch]">
-      Retrieval, measurement and judgement stay separate.
+      Findings, evidence and human judgement stay separate.
     </h2>
     <p class="reveal mt-4 t2 max-w-[62ch] leading-relaxed">
       Each layer does only what it can do reliably, and hands the rest on.
@@ -174,14 +173,14 @@ figure img { border-radius:12px; }
           <i class="ph ph-magnifying-glass text-[22px] acc mt-0.5 shrink-0" aria-hidden="true"></i>
           <div>
             <h3 class="font-semibold text-lg mb-1.5">Retrieve</h3>
-            <p class="t2 text-[15px] leading-relaxed max-w-[52ch]">The video is indexed for speech, plus one narrow visual index per visual requirement. Every rule searches for supporting and conflicting moments, so both are equally easy to find.</p>
+            <p class="t2 text-[15px] leading-relaxed max-w-[52ch]">AdProof checks what was said and shown, then places the clearest supporting moments and potential issues beside each confirmed requirement.</p>
           </div>
         </li>
         <li class="reveal flex gap-5">
           <i class="ph ph-ruler text-[22px] acc mt-0.5 shrink-0" aria-hidden="true"></i>
           <div>
             <h3 class="font-semibold text-lg mb-1.5">Measure</h3>
-            <p class="t2 text-[15px] leading-relaxed max-w-[52ch]">Durations, counts and thresholds are computed in code, never by a language model. Overlapping moments merge once, so nothing is counted twice.</p>
+            <p class="t2 text-[15px] leading-relaxed max-w-[52ch]">AdProof compares each confirmed threshold with the relevant spoken or visual moments, keeping the measurement beside the evidence a reviewer can inspect.</p>
           </div>
         </li>
         <li class="reveal flex gap-5">
@@ -216,7 +215,7 @@ figure img { border-radius:12px; }
     <div class="mt-14 grid md:grid-cols-3 md:grid-rows-2 gap-5">
       <article class="reveal surface rounded p-7 md:col-span-2 md:row-span-1" style="background:var(--accent-soft); border-color:var(--accent)">
         <h3 class="font-semibold text-lg mb-2">A search miss is not proof of absence</h3>
-        <p class="t2 text-[15px] leading-relaxed max-w-[62ch]">When nothing is found, AdProof records why: likely absent, low confidence, index incomplete, or provider failure. Only the strongest of those can produce a failure, and only when the rule opts in.</p>
+        <p class="t2 text-[15px] leading-relaxed max-w-[62ch]">When no qualifying moment is found, AdProof keeps that uncertainty visible. A missing match is never presented as certain proof of absence.</p>
       </article>
       <article class="reveal surface rounded p-7">
         <h3 class="font-semibold text-lg mb-2">Uncertainty stays visible</h3>
@@ -227,8 +226,8 @@ figure img { border-radius:12px; }
         <p class="t2 text-[15px] leading-relaxed">Automated results are immutable. An override sits beside the original, never on top of it, with a recorded reason.</p>
       </article>
       <article class="reveal rounded p-7 relative overflow-hidden md:col-span-2 text-white" style="background:#123028">
-        <h3 class="font-semibold text-lg mb-2">No fabricated results</h3>
-        <p class="text-[15px] leading-relaxed opacity-85 max-w-[62ch]">If the analysis service fails you get a visible error, not a plausible looking report. There is no fixture data anywhere in the product, and no silent fallback.</p>
+        <h3 class="font-semibold text-lg mb-2">Evidence stays reviewable</h3>
+        <p class="text-[15px] leading-relaxed opacity-85 max-w-[62ch]">Every finding opens at the relevant moment, so reviewers can verify the source, record an exception, and keep the final decision accountable.</p>
       </article>
     </div>
   </div>
@@ -259,28 +258,6 @@ figure img { border-radius:12px; }
   </div>
 </section>
 
-<!-- SCOPE: full-width honest callout. -->
-<section class="border-t hair">
-  <div class="max-w-[820px] mx-auto px-6 py-20">
-    <div class="reveal rounded p-8" style="border-left:3px solid var(--accent); background:var(--surface); border-top:1px solid var(--line); border-right:1px solid var(--line); border-bottom:1px solid var(--line)">
-      <h2 class="text-xl font-semibold mb-3">Where the product is today</h2>
-      <p class="t2 text-[15px] leading-relaxed">
-        AdProof implements nine structured requirement types across speech,
-        visual duration, on-screen events, disclosures, sequencing, prohibited
-        claims and human-only judgement. Required spoken phrase and minimum
-        visual duration have the deepest real-media field validation; the
-        remaining automated types are implemented and tested but labelled as
-        not yet field-validated. Evidence reels and exports are not built.
-        Subjective requirements such as "feels premium" always route to a
-        person and are never machine scored.
-      </p>
-      <p class="t2 text-[15px] leading-relaxed mt-3">
-        We would rather tell you here than in month two.
-      </p>
-    </div>
-  </div>
-</section>
-
 <!-- FAQ: accordion. -->
 <section id="faq" class="border-t hair" style="background:var(--surface)">
   <div class="max-w-[820px] mx-auto px-6 py-24 md:py-28">
@@ -298,21 +275,21 @@ figure img { border-radius:12px; }
           How accurate is the visual duration measurement?
           <i class="ph ph-plus text-[16px] t2 transition-transform group-open:rotate-45 shrink-0" aria-hidden="true"></i>
         </summary>
-        <p class="t2 text-[15px] leading-relaxed mt-3 max-w-[64ch]">Visual analysis samples a frame at a fixed interval, so measurements are accurate to roughly that interval, and that figure is shown next to every result. Anything falling within one interval of the threshold goes to a person instead of being guessed.</p>
+        <p class="t2 text-[15px] leading-relaxed mt-3 max-w-[64ch]">Every duration result links to the exact measured moment. Borderline findings stay marked for human review instead of being forced into pass or fail.</p>
       </details>
       <details class="group py-5">
         <summary class="flex items-center justify-between gap-4 cursor-pointer font-medium list-none">
           Who can see our creators' unpublished videos?
           <i class="ph ph-plus text-[16px] t2 transition-transform group-open:rotate-45 shrink-0" aria-hidden="true"></i>
         </summary>
-        <p class="t2 text-[15px] leading-relaxed mt-3 max-w-[64ch]">Only members of your workspace. Playback is proxied through AdProof behind a short-lived token bound to one person and one asset, and the underlying storage URL is never sent to a browser.</p>
+        <p class="t2 text-[15px] leading-relaxed mt-3 max-w-[64ch]">Only authorized members of your workspace can open private submissions and their evidence.</p>
       </details>
       <details class="group py-5">
         <summary class="flex items-center justify-between gap-4 cursor-pointer font-medium list-none">
-          Can we see how a result was produced?
+          What happens when a reviewer disagrees?
           <i class="ph ph-plus text-[16px] t2 transition-transform group-open:rotate-45 shrink-0" aria-hidden="true"></i>
         </summary>
-        <p class="t2 text-[15px] leading-relaxed mt-3 max-w-[64ch]">Every piece of evidence carries the query that retrieved it, the index it came from, the rule version applied and the raw provider response. Reports are versioned and history is append-only.</p>
+        <p class="t2 text-[15px] leading-relaxed mt-3 max-w-[64ch]">They can record an exception beside the original finding, cite the moment they reviewed, and keep the final decision separate.</p>
       </details>
       <details class="group py-5">
         <summary class="flex items-center justify-between gap-4 cursor-pointer font-medium list-none">
@@ -331,8 +308,7 @@ figure img { border-radius:12px; }
     <h2 class="text-3xl md:text-5xl font-semibold tracking-tight leading-tight">Stop taking the brief on trust.</h2>
     <p class="mt-5 t2 text-lg leading-relaxed">Bring one campaign and a few submissions. We will show you the evidence behind every result.</p>
     <div class="mt-9 flex flex-wrap gap-3 justify-center">
-      <a href="mailto:hello@adproof.example?subject=AdProof%20demo" class="btn btn-primary font-medium px-7 py-3.5">Book a demo</a>
-      <a href="/app" class="btn btn-ghost font-medium px-7 py-3.5">Open showcase</a>
+      <a href="/app" class="btn btn-primary font-medium px-7 py-3.5">Open saved runs</a>
     </div>
   </div>
 </section>
@@ -342,7 +318,7 @@ figure img { border-radius:12px; }
 <footer class="border-t hair py-10">
   <div class="max-w-shell mx-auto px-6 flex flex-wrap items-center justify-between gap-5">
     <span class="flex items-center gap-2 font-semibold"><span class="acc">◤</span> AdProof</span>
-    <p class="text-[13px] t2">&copy; <span id="year"></span> AdProof. Video infrastructure by VideoDB.</p>
+    <p class="text-[13px] t2">&copy; <span id="year"></span> AdProof.</p>
   </div>
 </footer>
 

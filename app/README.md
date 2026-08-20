@@ -21,8 +21,9 @@ analytics.
 Public visitors and authenticated operators use the same application URL:
 
 - With no account session, `/app` automatically issues a stable guest session
-  with analyst/read-only access to four completed, curated, provider-backed
-  NASA public-domain studies in `AdProof Client Showcase`.
+  with analyst access to two completed, provider-backed creator product reviews:
+  Biossance eye cream and Nank swimming headphones. Each source carries its
+  reuse terms and no-endorsement notice.
 - Creating a campaign or adding a submission opens login in context. Successful
   login replaces the guest cookie and resumes the requested action against the
   operator's persistent private workspace.
@@ -109,9 +110,46 @@ second as the provider/model candidate layer varied. Evidence counts were 47
 and 46. This is an observed example of the boundary above, not a result tuned by
 the showcase seeder.
 
-`/examples` remains a separate browser-only prepared walkthrough. It is useful
-for explaining outcome shapes, but is explicitly labelled and never presented
-as provider output.
+### Prepared playback for fixed saved runs
+
+Public saved runs never generate a provider stream in response to a viewer.
+The server derives a manifest from immutable `EvaluationResult.evidence_ids`
+plus append-only `RuleReview.evidence_viewed`, deduplicates identical padded
+windows, and resolves only the exact frozen entries in the sensitive
+`ADPROOF_SHOWCASE_PLAYBACK_REGISTRY_JSON` server environment through the
+principal/asset-bound AdProof proxy. The public repository and client bundles
+contain no provider locators. Private workspaces retain lazy clip generation.
+
+The current release contract is 22 cited evidence references, 21 unique clip
+windows, two full sources, and manifest SHA-256
+`68e48c51e0cf854037158bdfe9949bb3692227d2c098e2c2de28f7c82a9e5e58`.
+Each frozen entry also carries a server-only digest of its VideoDB
+video/collection binding. A production cold start fails closed unless the
+configured workspace, live DB citation graph (22 references / 21 clips / two
+sources), manifest hash, exact 23-entry registry, asset/window bindings, and
+provider-binding digests all agree.
+Operations are explicit:
+
+```bash
+# zero writes and zero provider calls
+./.venv/bin/python scripts/prepare_showcase_playback.py --inspect
+
+# validate every prepared HLS chain; zero writes and zero provider generation
+./.venv/bin/python scripts/prepare_showcase_playback.py --health-check
+
+# mandatory manifest/registry release gate; zero provider calls and zero writes
+./.venv/bin/python scripts/prepare_showcase_playback.py
+```
+
+VideoDB's live Generate Video Stream API reference says stream URLs remain
+valid while the video is stored and that existing streams are returned without
+reprocessing. AdProof does not infer validity from elapsed time. Provider
+locators remain in one encrypted Vercel server environment value, playback
+stays behind the scoped proxy, and release operations run the pinned registry
+gate plus the explicit read-only HLS health check. Browser traffic never invokes
+provider generation. If a stored video is removed or a health check fails, an
+operator must prepare and validate a replacement registry outside the request
+path before changing the sensitive environment value.
 
 ## Tests
 
@@ -120,7 +158,8 @@ createdb adproof_test
 ./.venv/bin/python -m pytest
 ```
 
-Postgres-backed tests skip automatically if no database is reachable.
+Postgres-backed tests skip automatically if no database is reachable. Schema,
+authorization, and advisory-lock changes require a fresh isolated Postgres run.
 
 | File | Covers |
 | --- | --- |

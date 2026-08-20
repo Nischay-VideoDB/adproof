@@ -174,12 +174,12 @@ Two processes. The worker is separate because provider calls block.
 
 Then <http://127.0.0.1:8000>. Landing page at `/`, application at `/app`.
 
-### Public production demo
+### Public production app
 
-<https://adproof-mu.vercel.app> hosts the same campaign, submission, VideoDB evaluation,
-review, decision, audit, analytics, and authenticated evidence-playback workflow. `/examples`
-is a prepared gallery; it does not replace the live app. “Try the live workflow” provisions an
-isolated, expiring public test workspace with explicit campaign/submission limits.
+<https://adproof-mu.vercel.app/app> opens two saved, provider-backed creator review runs.
+Login on the same page opens the private campaign, submission, review, decision, audit,
+analytics, and authenticated evidence-playback workflow. The retired `/examples` paths
+redirect to `/app`.
 
 Production uses Azure PostgreSQL as the durable queue and record store. A URL submission drains
 its deduplicated ingest/index/evaluate/report jobs during the bounded Vercel request; job state,

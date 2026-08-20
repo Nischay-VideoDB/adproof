@@ -1,13 +1,4 @@
-/* AdProof review UI.
- *
- * Rendering rules enforced here:
- *   - never render a stage as complete unless its job reached a terminal state;
- *   - never render "no evidence found" for a search that did not run;
- *   - always show absence class alongside a non-pass result;
- *   - always show provenance with every evidence item;
- *   - never receive or display a provider URL: playback goes through the
- *     authorized proxy.
- */
+/* AdProof campaign and submission workspace. */
 
 let currentUser = null;
 let currentWorkspaces = [];
@@ -39,6 +30,7 @@ function isDemoVisitor() {
 }
 
 function openLogin(context, intent = null) {
+  stopPlayback({ clearDetail: false, invalidateReport: false });
   if (intent) pendingAuthIntent = intent;
   $("login-context").textContent = context ||
     "Access your private workspace and continue your campaign work.";
@@ -60,15 +52,6 @@ async function establishDemoSession() {
   return response.ok;
 }
 
-/* AdProof review UI - Phase 1 slice.
- *
- * Rendering rules enforced here:
- *   - never render a stage as complete unless its job reached a terminal state;
- *   - never render "no evidence found" for a search that did not run;
- *   - always show absence class alongside a non-pass result;
- *   - always show provenance with every evidence item.
- */
-
 const STATE_LABEL = {
   pass: "Pass",
   fail: "Fail",
@@ -77,34 +60,25 @@ const STATE_LABEL = {
   human_review_required: "Human review required",
   processing: "Still processing",
   error: "Error",
+  changes_requested: "Changes requested",
+  escalated: "Escalated",
+  approved: "Approved",
+  rejected: "Rejected",
+};
+const labelState = (state) => STATE_LABEL[state] || String(state || "").replaceAll("_", " ").replace(/^./, (c) => c.toUpperCase());
+const effectiveState = (rule) => (rule.reviews || []).at(-1)?.human_state || rule.result?.state || "processing";
+const reviewOverride = (rule) => {
+  const review = (rule.reviews || []).at(-1);
+  return review?.human_state && review.human_state !== rule.result?.state ? review : null;
+};
+const effectiveStateLabel = (rule) => {
+  const state = effectiveState(rule);
+  if (!reviewOverride(rule)) return labelState(state);
+  if (state === "pass") return "Passed after review";
+  if (state === "fail") return "Failed after review";
+  return `${labelState(state)} after review`;
 };
 
-const ABSENCE_LABEL = {
-  not_applicable: "",
-  likely_absent: "No match in the completed index (likely absent, not proven)",
-  low_confidence_absence: "No match found (low-confidence absence)",
-  index_incomplete: "Index did not complete",
-  query_insufficient: "Query returned nothing usable",
-  unsupported_modality: "Modality not supported",
-  media_quality_issue: "Media quality prevented retrieval",
-  provider_failure: "Retrieval failed at the provider — nothing was searched",
-};
-
-const JOB_STATE_LABEL = {
-  queued: "Queued",
-  running: "Running",
-  succeeded: "Completed",
-  failed_retryable: "Failed — will retry",
-  failed_terminal: "Failed — needs attention",
-};
-
-const STAGE_LABEL = {
-  ingest: "Upload & ingestion",
-  index_spoken: "Spoken-word indexing",
-  index_visual: "Visual indexing",
-  retrieval: "Evidence retrieval",
-  evaluation: "Deterministic evaluation",
-};
 
 let currentSubmissionId = null;
 let currentCampaignId = null;
@@ -113,6 +87,16 @@ let currentReport = null;
 let currentEvidenceId = null;
 let hls = null;
 let pollTimer = null;
+let selectionEpoch = 0;
+let mediaEpoch = 0;
+let reportController = null;
+let playbackController = null;
+let campaignController = null;
+let currentView = "review";
+let campaignEpoch = 0;
+let pendingMediaListeners = [];
+let submissionListController = null;
+let submissionListEpoch = 0;
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) =>
@@ -125,9 +109,18 @@ const fmtTime = (s) => {
   const sec = (s % 60).toFixed(2).padStart(5, "0");
   return `${m}:${sec}`;
 };
+const EVIDENCE_TOKEN_LABELS = {
+  ACTION_VISIBLE: "Action visible",
+  NO_ACTION_MARKER: "No clear action marker",
+  DISCLOSURE_PRESENT: "Disclosure present",
+  DISCLOSURE_ABSENT: "Disclosure not visible or audible",
+};
+const displayEvidenceText = (value) => String(value ?? "").replace(
+  /\b[A-Z][A-Z0-9]+(?:_[A-Z0-9]+)+\b/g,
+  (token) => EVIDENCE_TOKEN_LABELS[token] || `${token[0]}${token.slice(1).toLowerCase().replaceAll("_", " ")}`
+);
 
 async function loadIntegrity() {
-  const badge = $("integrity-badge");
   let data;
   try {
     const response = await api("/api/integrity");
@@ -135,39 +128,9 @@ async function loadIntegrity() {
     data = await response.json();
     integrityData = data;
   } catch (err) {
-    if (badge) {
-      badge.textContent = "Integrity status unavailable";
-      badge.className = "badge badge-error";
-    }
     return;
   }
-
-  // Provider integrity is the high-value status. A missing disclosure node or
-  // an unexpected optional field must never overwrite a successful live check.
-  if (badge && data.provider_configured) {
-    badge.textContent = "Live provider — no fixture data";
-    badge.className = "badge badge-live";
-  } else if (badge) {
-    badge.textContent = "VideoDB not configured — processing will fail";
-    badge.className = "badge badge-error";
-  }
-
   try {
-    const list = $("disclosure-list");
-    const limitations = Array.isArray(data.known_limitations)
-      ? data.known_limitations
-      : [];
-    list.innerHTML = limitations
-      .map((l) => `<li>${esc(l)}</li>`)
-      .join("");
-    if (data.confidence_disclosure) {
-      list.insertAdjacentHTML(
-        "beforeend",
-        `<li>${esc(data.confidence_disclosure)}</li>`
-      );
-    }
-    $("disclosure").hidden = false;
-
     const directUpload = Boolean(data.input_capabilities?.direct_file_upload);
     const uploadField = $("file-upload-field");
     const fileInput = uploadField?.querySelector('input[name="file"]');
@@ -179,7 +142,7 @@ async function loadIntegrity() {
     if (urlInput) urlInput.required = !directUpload;
     if ($("input-guidance")) {
       $("input-guidance").textContent = directUpload
-        ? "Submit a local video or a durable public URL. Processing time and cost scale with video length."
+        ? "Submit a local video or a durable public URL."
         : data.input_capabilities?.production_guidance;
     }
   } catch (err) {
@@ -187,82 +150,103 @@ async function loadIntegrity() {
   }
 }
 
-async function loadSubmissions() {
-  const list = $("submission-list");
-  const subs = await (await api("/api/submissions")).json();
-  if (!subs.length) {
-    currentSubmissionId = null;
-    $("report-body").hidden = true;
-    $("report-placeholder").hidden = false;
-    const player = $("player");
-    player.pause();
-    if (hls) {
-      hls.destroy();
-      hls = null;
-    }
+function stopPlayback({ clearDetail = true, invalidateReport = true } = {}) {
+  mediaEpoch += 1;
+  if (invalidateReport) {
+    selectionEpoch += 1;
+    reportController?.abort();
+    reportController = null;
+  }
+  playbackController?.abort();
+  playbackController = null;
+  const player = $("player");
+  pendingMediaListeners.forEach(([type, listener]) => player?.removeEventListener(type, listener));
+  pendingMediaListeners = [];
+  player?.pause();
+  if (hls) {
+    hls.destroy();
+    hls = null;
+  }
+  if (player) {
     player.removeAttribute("src");
     player.dataset.src = "";
     player.load();
   }
+  currentEvidenceId = null;
+  document.querySelectorAll(".btn-play.active").forEach((button) => button.classList.remove("active"));
+  $("detection-marker")?.setAttribute("hidden", "");
+  if ($("player-note")) $("player-note").textContent = "Choose an evidence moment to play it.";
+  if (clearDetail) {
+    if ($("evidence-list")) $("evidence-list").innerHTML = "";
+    if ($("requirement-measurement")) $("requirement-measurement").innerHTML = "";
+    if ($("review-controls")) $("review-controls").innerHTML = "";
+  }
+  return mediaEpoch;
+}
+
+function clearReportView(message = "Choose a saved run to inspect its requirement evidence.") {
+  stopPlayback();
+  currentReport = null;
+  selectedRuleId = null;
+  $("report-body").hidden = true;
+  $("report-placeholder").hidden = false;
+  $("report-placeholder").textContent = message;
+  $("report-title").textContent = "Submission";
+  $("report-sub").textContent = "";
+  $("submission-summary").innerHTML = "";
+  $("source-attribution").hidden = true;
+  $("adjudication-slot").innerHTML = "";
+  $("requirement-picker").innerHTML = "";
+  $("evidence-title").textContent = "Select a requirement";
+  $("requirement-state").textContent = "";
+}
+
+function addPlayerListener(type, listener) {
+  const player = $("player");
+  pendingMediaListeners.push([type, listener]);
+  player.addEventListener(type, listener, { once: true });
+}
+
+async function loadSubmissions() {
+  submissionListController?.abort();
+  submissionListController = new AbortController();
+  const epoch = ++submissionListEpoch;
+  let response;
+  try {
+    response = await api("/api/submissions", { signal: submissionListController.signal });
+  } catch (error) {
+    if (error.name === "AbortError") return;
+    throw error;
+  }
+  const subs = await response.json();
+  if (epoch !== submissionListEpoch) return;
   const selectedStillExists = subs.some((s) => s.id === currentSubmissionId);
-  const shouldOpenFirst = subs.length > 0 && !selectedStillExists && !currentSubmissionId;
-  if (shouldOpenFirst) currentSubmissionId = subs[0].id;
+  let shouldOpenFirst = false;
+  if (!selectedStillExists) {
+    clearReportView(subs.length ? "Loading saved verification run…" : "No submissions yet.");
+    currentSubmissionId = subs[0]?.id || null;
+    shouldOpenFirst = Boolean(currentSubmissionId);
+  }
   $("submissions-empty").hidden = subs.length > 0;
-  list.innerHTML = subs
+  const picker = $("submission-picker");
+  picker.innerHTML = subs
     .map(
-      (s) => `
-      <li>
-        <button class="submission-btn ${s.id === currentSubmissionId ? "active" : ""}"
-                data-id="${esc(s.id)}">
-          <span class="creator">${esc(s.creator_reference)}</span>
-          <span class="campaign">${esc(s.campaign_name ?? "")}</span>
-          <span class="submission-meta">
-            <span class="tag ${s.is_showcase ? "tag-showcase" : "tag-sandbox"}">${esc(
-              s.is_showcase ? "showcase" : s.workspace_name ?? "your sandbox"
-            )}</span>
-            <span class="state-chip state-${esc(s.state)}">${esc(s.state)}</span>
-          </span>
-        </button>
-      </li>`
+      (s) => `<option value="${esc(s.id)}" ${s.id === currentSubmissionId ? "selected" : ""}>${esc(s.creator_reference)} — ${esc(s.campaign_name ?? "Campaign")} — ${esc(labelState(s.state))}</option>`
     )
     .join("");
-  list.querySelectorAll(".submission-btn").forEach((btn) =>
-    btn.addEventListener("click", () => selectSubmission(btn.dataset.id))
-  );
   if (shouldOpenFirst) loadReport();
 }
 
-function selectSubmission(id, ruleId = null, autoplayEvidenceId = null) {
+function selectSubmission(id, ruleId = null) {
+  clearReportView("Loading saved verification run…");
   currentSubmissionId = id;
   selectedRuleId = ruleId;
-  loadSubmissions();
-  loadReport(autoplayEvidenceId);
   switchView("review");
+  $("submission-picker").value = id;
+  loadReport();
 }
 
-function renderStages(stages) {
-  $("stages").innerHTML = stages
-    .map((s) => {
-      const elapsed =
-        s.elapsed_seconds !== null && s.elapsed_seconds !== undefined
-          ? ` · ${s.elapsed_seconds.toFixed(1)}s`
-          : "";
-      const attempts =
-        s.attempt_count > 1 ? ` · attempt ${s.attempt_count}/${s.max_attempts}` : "";
-      const err = s.error_summary
-        ? `<div class="stage-error">${esc(s.error_summary)}</div>`
-        : "";
-      return `
-        <li class="stage stage-${esc(s.state)}">
-          <span class="stage-name">${esc(STAGE_LABEL[s.stage] ?? s.stage)}</span>
-          <span class="stage-state">${esc(
-            JOB_STATE_LABEL[s.state] ?? s.state
-          )}${elapsed}${attempts}</span>
-          ${err}
-        </li>`;
-    })
-    .join("");
-}
+$("submission-picker").addEventListener("change", (event) => selectSubmission(event.target.value));
 
 function renderEvidence(ev) {
   const label = ev.evidence_kind === "issue"
@@ -279,70 +263,12 @@ function renderEvidence(ev) {
               : ""
           }</span>
       <span class="evidence-copy"><strong>${label}</strong>${
-        ev.text ? `<span>${esc(ev.text)}</span>` : ""
+        ev.text ? `<span>${esc(displayEvidenceText(ev.text))}</span>` : ""
       }</span>
       <span aria-hidden="true" class="evidence-arrow">→</span>
     </button>`;
 }
 
-
-// Who concluded this rule. When the reading model and the deterministic
-// measurement disagree, both answers are shown -- the reviewer sees the
-// conflict rather than a single number that hides it.
-function renderVerdict(res) {
-  if (!res || res.decided_by !== "verdict_model") return "";
-  const disagrees =
-    res.deterministic_state && res.deterministic_state !== res.state;
-  return `
-    <div class="verdict${disagrees ? " verdict-split" : ""}">
-      <p class="verdict-head">
-        <span class="source-tag">read by ${esc(res.verdict_model || "model")}</span>
-        ${
-          disagrees
-            ? `<span class="verdict-warn">disagrees with the measurement, which said “${esc(
-                res.deterministic_state
-              )}”</span>`
-            : `<span class="verdict-ok">agrees with the measurement</span>`
-        }
-      </p>
-      ${
-        res.verdict_reasoning
-          ? `<p class="verdict-why">${esc(res.verdict_reasoning)}</p>`
-          : ""
-      }
-    </div>`;
-}
-
-function renderRuns(runs) {
-  return runs
-    .map((r) => {
-      let outcome;
-      if (!r.executed && r.error_summary) {
-        outcome = `<span class="run-notrun">did not run — ${esc(
-          r.error_summary
-        )}</span>`;
-      } else if (r.result_count === 0) {
-        outcome = `<span class="run-empty">ran, returned 0 results</span>`;
-      } else if (r.result_truncated) {
-        outcome = `<span class="run-truncated">ran, returned ${r.result_count}
-          result(s) — HIT THE RETRIEVAL LIMIT of ${r.result_threshold},
-          so more evidence may exist and the measurement understates</span>`;
-      } else {
-        outcome = `<span class="run-ok">ran, returned ${r.result_count} result(s)</span>`;
-      }
-      return `
-        <li>
-          <code>${esc(r.query)}</code>
-          <span class="run-meta">${esc(r.search_type)} / ${esc(
-            r.index_type
-          )} · ${esc(r.role)} · ${
-            r.counts_toward_measurement ? "counted" : "context only"
-          }</span>
-          ${outcome}
-        </li>`;
-    })
-    .join("");
-}
 
 const REASON_LABELS = {
   false_positive: "False positive — flagged something that isn't there",
@@ -360,11 +286,16 @@ const DECISION_LABELS = {
   request_changes: "Request changes",
   escalate: "Escalate",
 };
+const FINAL_DECISION_LABELS = {
+  approve: "Approved",
+  reject: "Rejected",
+  request_changes: "Changes requested",
+  escalate: "Escalated",
+};
 
 function renderAdjudication(report) {
   const adj = report.adjudication;
   const permitted = new Set(adj.permitted_decisions);
-  const rec = adj.machine_recommendation;
   const effectiveState = (rule) =>
     (rule.reviews || []).at(-1)?.human_state || rule.result?.state;
   const failedRules = report.rules.filter((rule) => effectiveState(rule) === "fail");
@@ -400,18 +331,15 @@ function renderAdjudication(report) {
     })
     .join("");
   const actions = report.permissions.read_only
-    ? `<div class="read-only-note">This is a stable showcase record. Decisions are visible, but editing is disabled.</div>`
+    ? ""
     : `<div class="decision-actions">${buttons}</div>`;
 
   const history = report.decisions.length
     ? `<ul class="decision-history">${report.decisions
         .map(
           (d) => `<li>
-            <strong>${esc(DECISION_LABELS[d.decision] ?? d.decision)}</strong>
+            <strong>${esc(FINAL_DECISION_LABELS[d.decision] ?? d.decision)}</strong>
             by ${esc(d.decided_by)}
-            <span class="muted-inline">· machine suggested ${esc(
-              d.machine_recommendation ?? "nothing"
-            )} · ${d.agreed_with_machine ? "agreed" : "disagreed"}</span>
             <div class="decision-rationale">${esc(d.rationale)}</div>
           </li>`
         )
@@ -424,10 +352,6 @@ function renderAdjudication(report) {
         .map((r) => `<li>${esc(r)}</li>`)
         .join("")}</ul>
       ${actions}
-      <p class="note">
-        A person owns the final decision. The automated recommendation is
-        recorded for audit (${esc(rec ?? "none")}) but is not presented as the answer.
-      </p>
       ${history}
     </div>`;
 }
@@ -442,45 +366,46 @@ function renderRules(rules, permissions) {
     });
     selectedRuleId = (firstUnresolved || rules[0]).id;
   }
-  $("rules").innerHTML = rules.map((rule) => {
-    const latest = (rule.reviews || []).at(-1);
-    const state = latest?.human_state || rule.result?.state || "processing";
-    return `<button type="button" class="requirement-item ${rule.id === selectedRuleId ? "active" : ""}"
-      data-rule-select="${esc(rule.id)}" aria-current="${rule.id === selectedRuleId ? "true" : "false"}">
-      <span class="result-dot result-${esc(state)}" aria-hidden="true"></span>
-      <span><strong>${esc(rule.requirement_text)}</strong><small>${esc(STATE_LABEL[state] || state)}${latest ? " · reviewed" : ""}</small></span>
-    </button>`;
+  $("requirement-picker").innerHTML = rules.map((rule) => {
+    const state = effectiveState(rule);
+    return `<option value="${esc(rule.id)}" ${rule.id === selectedRuleId ? "selected" : ""}>R${rule.ordinal + 1} · ${esc(rule.requirement_text)} · ${esc(labelState(state))}</option>`;
   }).join("");
 
   const rule = rules.find((item) => item.id === selectedRuleId);
   const res = rule.result;
-  const latest = (rule.reviews || []).at(-1);
-  const effective = latest?.human_state || res?.state || "processing";
-  const measurement = res && res.measured_value !== null && res.measured_value !== undefined
-    ? `<div class="proof-card"><span>Measured proof</span><strong>${esc(res.measured_value)} ${esc(res.measured_unit || "")}</strong><p>Required threshold: ${esc(res.threshold_value)} ${esc(res.measured_unit || "")}${res.measurement_resolution_seconds ? ` · ±${esc(res.measurement_resolution_seconds)}s sampling resolution` : ""}</p></div>`
-    : `<div class="proof-card"><span>Measured proof</span><strong>No numeric threshold</strong><p>This check is resolved from observed evidence and its configured policy.</p></div>`;
-  const noHit = rule.no_hit_receipt
+  const effective = effectiveState(rule);
+  const override = reviewOverride(rule);
+  const subjectiveReview = rule.rule_type === "subjective_human_review";
+  const measurementLabel = subjectiveReview
+    ? "Review basis"
+    : override
+    ? (rule.rule_type === "required_spoken_phrase" ? "Automated exact match" : "Automated check")
+    : "Measured proof";
+  const measurement = subjectiveReview
+    ? `<span>${measurementLabel}</span><strong>Full-source review</strong>`
+    : res && res.measured_value !== null && res.measured_value !== undefined
+    ? `<span>${measurementLabel}</span><strong>${esc(res.measured_value)} ${esc(res.measured_unit || "")}</strong>${res.threshold_value !== null && res.threshold_value !== undefined ? `<small>Requirement: ${esc(res.threshold_value)} ${esc(res.measured_unit || "")}</small>` : ""}`
+    : `<span>${measurementLabel}</span><strong>${rule.evidence.length ? `${rule.evidence.length} cited moment${rule.evidence.length === 1 ? "" : "s"}` : "No cited moment"}</strong>`;
+  const reviewedResolution = override
+    ? `<p class="recorded-resolution"><strong>Recorded review: ${esc(labelState(override.human_state))}.</strong> ${esc(override.human_state === "pass" ? (rule.evidence.length ? "Reviewer confirmed this requirement in the cited evidence." : "Reviewer recorded this as met during full-source review.") : override.human_state === "fail" ? "Reviewer recorded that this requirement was not met." : "Reviewer kept this requirement unresolved.")}</p>`
+    : "";
+  const noHit = rule.no_hit_receipt && !override
     ? `<div class="no-hit"><strong>${esc({
         coverage_incomplete: "Coverage incomplete",
-        no_qualifying_match: "Retrieved context did not qualify",
+        no_qualifying_match: "No qualifying moment",
         missing_required_part: "A required part is missing",
         not_found: "No matching moment found",
-      }[rule.no_hit_receipt.state] || "Evidence receipt")}</strong><p>${esc(rule.no_hit_receipt.meaning)}</p><small>${rule.no_hit_receipt.searches_completed} of ${rule.no_hit_receipt.searches_expected} required searches completed.</small></div>`
+      }[rule.no_hit_receipt.state] || "No qualifying moment")}</strong><p>${rule.no_hit_receipt.coverage_complete ? "The completed review recorded no qualifying moment for this requirement." : "The available coverage cannot support an absence conclusion."}</p></div>`
     : "";
   const reviewControls = res && permissions.can_review
     ? `<div class="review-actions"><button class="btn btn-small" data-confirm="${esc(rule.id)}">Confirm finding</button><button class="btn btn-small" data-override="${esc(rule.id)}">Record exception</button></div>`
     : "";
-  const humanBlock = latest
-    ? `<div class="human-verdict"><span class="eyebrow">Human position</span><strong>${esc(STATE_LABEL[latest.human_state] || latest.human_state)}</strong><p>${latest.reason_text ? esc(latest.reason_text) : "Reviewer confirmed the recorded finding."}</p></div>`
-    : "";
-  $("requirement-detail").innerHTML = `
-    <span class="eyebrow">Requirement ${rule.ordinal + 1}</span>
-    <div class="requirement-result"><span class="result-chip result-${esc(effective)}">${esc(STATE_LABEL[effective] || effective)}</span><h2>${esc(rule.requirement_text)}</h2></div>
-    ${measurement}
-    ${res ? `<div class="why-card"><span>Why this result</span><p>${esc(res.explanation)}</p></div>` : `<p class="empty">Evaluation has not completed.</p>`}
-    ${res?.absence_class && res.absence_class !== "not_applicable" ? `<p class="absence">${esc(ABSENCE_LABEL[res.absence_class])}</p>` : ""}
-    ${noHit}${humanBlock}${reviewControls}
-    <details class="secondary-disclosure"><summary>How this check was evaluated</summary><p class="note">${esc(rule.source_brief_excerpt || "Confirmed requirement")}</p><ul class="run-list">${renderRuns(rule.retrieval_runs)}</ul></details>`;
+  $("requirement-number").textContent = `Requirement ${rule.ordinal + 1}`;
+  $("evidence-title").textContent = rule.requirement_text;
+  $("requirement-state").textContent = effectiveStateLabel(rule);
+  $("requirement-state").className = `result-chip result-${effective}`;
+  $("requirement-measurement").innerHTML = measurement + reviewedResolution;
+  $("review-controls").innerHTML = reviewControls;
 
   const proof = rule.evidence.filter((item) => item.evidence_kind === "proof");
   const issues = rule.evidence.filter((item) => item.evidence_kind === "issue");
@@ -488,16 +413,8 @@ function renderRules(rules, permissions) {
   const evidenceGroup = (title, items) => items.length ? `
     <section class="evidence-group"><h4>${title}</h4>${items.slice(0, 4).map(renderEvidence).join("")}
     ${items.length > 4 ? `<details><summary>${items.length - 4} additional moment(s)</summary>${items.slice(4).map(renderEvidence).join("")}</details>` : ""}</section>` : "";
-  $("evidence-title").textContent = rule.requirement_text;
   $("evidence-list").innerHTML = evidenceGroup("Measured moments", proof) + evidenceGroup("Potential issues", issues) + evidenceGroup("Context that may change the reading", context) + (!rule.evidence.length ? noHit : "");
 
-  document.querySelectorAll("[data-rule-select]").forEach((btn) => btn.addEventListener("click", () => {
-    selectedRuleId = btn.dataset.ruleSelect;
-    currentEvidenceId = null;
-    renderRules(rules, permissions);
-    const first = rules.find((item) => item.id === selectedRuleId)?.evidence.find((item) => item.evidence_kind !== "context");
-    if (first) playAt(first.id);
-  }));
   document.querySelectorAll(".btn-play").forEach((btn) => btn.addEventListener("click", () => playAt(btn.dataset.evidence)));
   document.querySelectorAll("[data-confirm]").forEach((btn) =>
     btn.addEventListener("click", () => submitReview(btn.dataset.confirm, "confirm"))
@@ -552,7 +469,7 @@ function openDecision(decision) {
 }
 
 function loadStream(url, onReady) {
-  // url points at AdProof's own proxy, never at the provider.
+  // The browser receives only an AdProof playback path.
   const player = $("player");
   if (player.dataset.src === url) {
     if (onReady) onReady();
@@ -567,16 +484,25 @@ function loadStream(url, onReady) {
     if (onReady) hls.on(window.Hls.Events.MANIFEST_PARSED, onReady);
   } else if (player.canPlayType("application/vnd.apple.mpegurl")) {
     player.src = url;
-    if (onReady) player.addEventListener("loadedmetadata", onReady, { once: true });
+    if (onReady) addPlayerListener("loadedmetadata", onReady);
   } else {
     $("player-note").textContent =
       "This browser cannot play HLS streams; evidence playback is unavailable.";
   }
 }
 
-async function fetchPlayback(evidenceId) {
+async function fetchPlayback(evidenceId, epoch, submissionId, ruleId) {
   $("player-note").textContent = "Preparing a bounded evidence clip…";
-  const res = await api(`/api/evidence/${evidenceId}/playback`);
+  playbackController?.abort();
+  playbackController = new AbortController();
+  let res;
+  try {
+    res = await api(`/api/evidence/${evidenceId}/playback`, { signal: playbackController.signal });
+  } catch (error) {
+    if (error.name === "AbortError") return null;
+    throw error;
+  }
+  if (epoch !== mediaEpoch || submissionId !== currentSubmissionId || ruleId !== selectedRuleId) return null;
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     $("player-note").textContent =
@@ -586,23 +512,22 @@ async function fetchPlayback(evidenceId) {
   return res.json();
 }
 
-// Attach the stream as soon as the report opens, so the native play button
-// works without first clicking an evidence timestamp.
-async function preloadPlayer(evidenceId) {
-  const data = await fetchPlayback(evidenceId);
-  if (data) loadStream(data.playback_url);
-}
-
 async function playAt(evidenceId) {
-  const data = await fetchPlayback(evidenceId);
+  const submissionId = currentSubmissionId;
+  const ruleId = selectedRuleId;
+  const epoch = stopPlayback({ clearDetail: false, invalidateReport: false });
+  const data = await fetchPlayback(evidenceId, epoch, submissionId, ruleId);
   if (!data) return;
+  if (epoch !== mediaEpoch || submissionId !== currentSubmissionId || ruleId !== selectedRuleId) return;
   currentEvidenceId = evidenceId;
   document.querySelectorAll(".btn-play").forEach((button) =>
     button.classList.toggle("active", button.dataset.evidence === evidenceId)
   );
   const player = $("player");
   const fullSourceContext = data.playback_mode === "full_source_context";
+  const stillCurrent = () => epoch === mediaEpoch && submissionId === currentSubmissionId && ruleId === selectedRuleId && evidenceId === currentEvidenceId;
   const start = () => {
+    if (!stillCurrent()) return;
     player.currentTime = fullSourceContext ? data.detected_start_seconds : 0;
     player.play().catch(() => {});
   };
@@ -610,6 +535,7 @@ async function playAt(evidenceId) {
   if (player.dataset.src === data.playback_url && player.readyState >= 1) start();
   const marker = $("detection-marker");
   const renderMarker = (duration) => {
+    if (!stillCurrent()) return;
     if (!Number.isFinite(duration) || duration <= 0) {
       marker.hidden = true;
       return;
@@ -626,7 +552,9 @@ async function playAt(evidenceId) {
   };
   if (fullSourceContext) {
     renderMarker(player.duration);
-    player.addEventListener("loadedmetadata", () => renderMarker(player.duration), { once: true });
+    addPlayerListener("loadedmetadata", () => {
+      if (stillCurrent()) renderMarker(player.duration);
+    });
   } else {
     renderMarker(data.playback_end_seconds - data.playback_start_seconds);
   }
@@ -635,16 +563,40 @@ async function playAt(evidenceId) {
     : `Detected ${fmtTime(data.detected_start_seconds)}–${fmtTime(data.detected_end_seconds)}${data.showing_surrounding_context ? " · showing surrounding context" : ""}.`;
 }
 
-async function loadReport(autoplayEvidenceId = null) {
+async function loadReport() {
   if (!currentSubmissionId) return;
   // Report payloads can be large. If a reviewer selects another matrix cell
   // while an earlier request is in flight, the stale response must never
   // replace the newly selected submission or requirement.
   const requestedSubmissionId = currentSubmissionId;
-  const res = await api(`/api/submissions/${requestedSubmissionId}/report`);
-  if (!res.ok) return;
+  const requestedEpoch = selectionEpoch;
+  reportController?.abort();
+  reportController = new AbortController();
+  $("report-panel")?.setAttribute("aria-busy", "true");
+  const transitioning = currentReport?.submission?.id !== requestedSubmissionId;
+  if (transitioning) {
+    $("report-body").hidden = true;
+    $("report-placeholder").hidden = false;
+    $("report-placeholder").innerHTML = `<span class="skeleton-line"></span><span class="skeleton-line short"></span>`;
+  }
+  let res;
+  try {
+    res = await api(`/api/submissions/${requestedSubmissionId}/report`, { signal: reportController.signal });
+  } catch (error) {
+    if (error.name === "AbortError") return;
+    throw error;
+  }
+  if (!res.ok) {
+    if (currentSubmissionId === requestedSubmissionId && requestedEpoch === selectionEpoch) {
+      $("report-body").hidden = true;
+      $("report-placeholder").hidden = false;
+      $("report-placeholder").textContent = "This saved run could not be loaded. Try again.";
+      $("report-panel")?.setAttribute("aria-busy", "false");
+    }
+    return;
+  }
   const data = await res.json();
-  if (currentSubmissionId !== requestedSubmissionId) return;
+  if (currentSubmissionId !== requestedSubmissionId || requestedEpoch !== selectionEpoch) return;
   currentReport = data;
 
   // Swap the placeholder for the report. `report-panel` is the always-visible
@@ -652,15 +604,9 @@ async function loadReport(autoplayEvidenceId = null) {
   $("report-placeholder").hidden = true;
   $("report-body").hidden = false;
   $("report-title").textContent = data.submission.creator_reference;
-  $("report-sub").textContent = `${data.campaign.name ?? "Campaign"} · version ${data.version.version}`;
-  const access = $("report-access");
-  access.hidden = false;
-  access.className = `report-access ${data.permissions.read_only ? "is-read-only" : "is-writable"}`;
-  access.innerHTML = data.permissions.read_only
-    ? `<strong>Curated demonstration · read only.</strong> Inspect each requirement, its measurement, exact clip, and recorded human decision.`
-    : `<strong>Your live sandbox.</strong> Create campaigns, submit public media URLs, review findings and record decisions here.`;
+  $("report-sub").textContent = `${data.campaign.name ?? "Campaign"} · ${data.rules.length} requirements`;
   const chip = $("submission-state");
-  chip.textContent = data.submission.state;
+  chip.textContent = labelState(data.submission.state);
   chip.className = `state-chip state-${data.submission.state}`;
 
   const errBox = $("submission-error");
@@ -671,45 +617,30 @@ async function loadReport(autoplayEvidenceId = null) {
     errBox.hidden = true;
   }
 
-  renderStages(data.stages);
-
   const hasTerminalFailure = data.stages.some(
     (s) => s.state === "failed_terminal"
   );
   $("retry-btn").hidden = !hasTerminalFailure || !data.permissions.can_retry;
 
-  if (data.media) {
-    $("media-info").innerHTML = `
-      <dl>
-        <dt>Duration</dt><dd>${
-          data.media.duration_seconds === null ||
-          data.media.duration_seconds === undefined
-            ? "not available"
-            : data.media.duration_seconds.toFixed(2) + "s"
-        }</dd>
-        <dt>Playback</dt><dd>${data.media.playable ? "Available through authenticated AdProof media access" : "Not ready"}</dd>
-      </dl>`;
-  } else {
-    $("media-info").innerHTML =
-      `<p class="empty">No media reference recorded yet. Ingestion has not completed.</p>`;
-  }
+  const counts = { pass: 0, fail: 0, uncertain: 0, human_review_required: 0 };
+  data.rules.forEach((rule) => { const state = effectiveState(rule); if (state in counts) counts[state] += 1; });
+  $("submission-summary").innerHTML = [
+    ["Requirements", data.rules.length], ["Passed", counts.pass], ["Failed", counts.fail],
+    ["Uncertain", counts.uncertain], ["Review required", counts.human_review_required],
+  ].map(([label, value]) => `<div><strong>${value}</strong><span>${label}</span></div>`).join("");
+  const sourceBox = $("source-attribution");
   if (data.source_attribution) {
     const source = data.source_attribution;
-    $("media-info").insertAdjacentHTML("beforeend", `<details class="source-license"><summary>Source &amp; license</summary><dl><dt>Title</dt><dd>${esc(source.title)}</dd><dt>Author</dt><dd>${esc(source.author)}</dd><dt>Source</dt><dd><a href="${esc(source.source_page_url)}" target="_blank" rel="noopener noreferrer">${esc(source.source_page_url)}</a></dd><dt>License</dt><dd><a href="${esc(source.license_url)}" target="_blank" rel="noopener noreferrer">Licensed under ${esc(source.license_name)}</a></dd></dl><p>AdProof uses bounded excerpts and analytical overlays from this independently published video. This is a fictional, curated campaign; AdProof did not commission the video, and no creator, brand, retailer, platform, or uploader endorsement is implied.</p></details>`);
+    sourceBox.hidden = false;
+    sourceBox.querySelector("div").innerHTML = `<dl><dt>Title</dt><dd>${esc(source.title)}</dd><dt>Author</dt><dd>${esc(source.author)}</dd><dt>Source</dt><dd><a href="${esc(source.source_page_url)}" target="_blank" rel="noopener noreferrer">${esc(source.source_page_url)}</a></dd><dt>License</dt><dd><a href="${esc(source.license_url)}" target="_blank" rel="noopener noreferrer">Licensed under ${esc(source.license_name)}</a></dd></dl><p>Independent source reviewed against this saved campaign brief. AdProof uses bounded excerpts and analytical overlays, did not commission the video, and no endorsement is implied.</p>`;
+  } else {
+    sourceBox.hidden = true;
   }
 
   $("adjudication-slot").innerHTML = renderAdjudication(data);
   renderRules(data.rules, data.permissions);
   document.querySelectorAll(".decision-btn").forEach((btn) => btn.addEventListener("click", () => openDecision(btn.dataset.decision)));
-  const targetEvidence = autoplayEvidenceId || data.rules.find((r) => r.id === selectedRuleId)?.evidence.find((e) => e.evidence_kind !== "context")?.id;
-  if (targetEvidence) playAt(targetEvidence);
-
-  const auditRes = await api(`/api/submissions/${requestedSubmissionId}/audit`);
-  if (auditRes.ok) {
-    const events = await auditRes.json();
-    if (currentSubmissionId !== requestedSubmissionId) return;
-    $("audit-list").innerHTML = `<h4>Audit trail</h4><ol class="audit-list">${events.map((event) => `<li><strong>${esc(event.category.replaceAll(".", " "))}</strong><span>${esc(event.actor)} · ${esc(new Date(event.at).toLocaleString())}</span></li>`).join("")}</ol>`;
-  }
+  $("report-panel")?.setAttribute("aria-busy", "false");
 
   clearTimeout(pollTimer);
   if (!data.processing_complete) {
@@ -722,12 +653,28 @@ async function loadReport(autoplayEvidenceId = null) {
 
 $("full-source-btn").addEventListener("click", async () => {
   if (!currentSubmissionId) return;
-  const response = await api(`/api/submissions/${currentSubmissionId}/playback`);
-  if (!response.ok) return;
+  const submissionId = currentSubmissionId;
+  const ruleId = selectedRuleId;
+  const epoch = stopPlayback({ clearDetail: false, invalidateReport: false });
+  playbackController = new AbortController();
+  let response;
+  try {
+    response = await api(`/api/submissions/${submissionId}/playback`, { signal: playbackController.signal });
+  } catch (error) {
+    if (error.name === "AbortError") return;
+    if (epoch === mediaEpoch) $("player-note").textContent = "Full source playback is unavailable. Try again.";
+    return;
+  }
+  if (epoch !== mediaEpoch || submissionId !== currentSubmissionId || ruleId !== selectedRuleId) return;
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    $("player-note").textContent = body.detail ?? "Full source playback is unavailable. Try again.";
+    return;
+  }
   const data = await response.json();
   $("detection-marker").hidden = true;
   $("player-note").textContent = "Full source playback · evidence markers are shown only on bounded clips.";
-  loadStream(data.playback_url, () => $("player").play().catch(() => {}));
+  loadStream(data.playback_url);
 });
 
 $("retry-btn").addEventListener("click", async () => {
@@ -738,6 +685,9 @@ $("retry-btn").addEventListener("click", async () => {
 /* ── views ──────────────────────────────────────────────────────────────── */
 
 function switchView(view) {
+  if (view === "analytics" && isDemoVisitor()) view = "review";
+  if (view !== currentView) stopPlayback({ clearDetail: false, invalidateReport: false });
+  currentView = view;
   document.querySelectorAll(".tab").forEach((tab) => {
     const active = tab.dataset.view === view;
     tab.classList.toggle("active", active);
@@ -753,12 +703,6 @@ document.querySelectorAll(".tab").forEach((tab) =>
   tab.addEventListener("click", () => switchView(tab.dataset.view))
 );
 
-$("disclosure-toggle").addEventListener("click", () => {
-  const list = $("disclosure-list");
-  list.hidden = !list.hidden;
-  $("disclosure-toggle").setAttribute("aria-expanded", String(!list.hidden));
-});
-
 /* ── campaigns ──────────────────────────────────────────────────────────── */
 
 async function loadCampaigns() {
@@ -767,19 +711,9 @@ async function loadCampaigns() {
     currentCampaignId = campaigns[0]?.id || null;
   }
   $("campaigns-empty").hidden = campaigns.length > 0;
-  $("campaign-list").innerHTML = campaigns
-    .map(
-      (c) => `<li><button type="button" class="campaign-row ${c.id === currentCampaignId ? "active" : ""}" data-campaign="${esc(c.id)}">
-        <span class="campaign-card-top"><strong>${esc(c.name)}</strong><span aria-hidden="true">→</span></span>
-        <span>${esc(c.workspace_name ?? "Workspace")} · ${esc(c.is_showcase ? "curated demo" : "private campaign")}</span>
-        <small>${esc(c.rule_set_version ? `Confirmed rule set v${c.rule_set_version}` : "Rules not confirmed")}</small>
-      </button></li>`
-    )
-    .join("");
-  $("campaign-list").querySelectorAll("[data-campaign]").forEach((button) => button.addEventListener("click", () => {
-    currentCampaignId = button.dataset.campaign;
-    loadCampaigns();
-  }));
+  $("campaign-picker").innerHTML = campaigns.map((c) =>
+    `<option value="${esc(c.id)}" ${c.id === currentCampaignId ? "selected" : ""}>${esc(c.name)}</option>`
+  ).join("");
   const select = document.querySelector('#submission-form select[name="campaign_id"]');
   const writableCampaigns = campaigns.filter((c) => c.can_submit);
   select.innerHTML = writableCampaigns
@@ -797,37 +731,81 @@ function matrixStatus(state, reviewed = false) {
   return `<span class="matrix-status result-${esc(state)}"><span aria-hidden="true">${icon}</span>${esc(STATE_LABEL[state] || state)}${reviewed ? " · reviewed" : ""}</span>`;
 }
 
+function renderDecisionStatus(decision) {
+  if (!decision) return `<span class="matrix-status">Not decided</span>`;
+  return `<span class="matrix-status decision-${esc(decision)}"><span aria-hidden="true">${decision === "approve" ? "✓" : decision === "reject" ? "!" : "↗"}</span>${esc(FINAL_DECISION_LABELS[decision] || labelState(decision))}</span>`;
+}
+
 async function loadCampaignDashboard(campaignId) {
-  const response = await api(`/api/campaigns/${campaignId}/dashboard`);
-  if (!response.ok) return;
+  campaignController?.abort();
+  campaignController = new AbortController();
+  const epoch = ++campaignEpoch;
+  const requestedId = campaignId;
+  $("campaign-dashboard").setAttribute("aria-busy", "true");
+  $("campaign-dashboard").innerHTML = `<p class="empty placeholder"><span class="skeleton-line"></span><span class="skeleton-line short"></span></p>`;
+  let response;
+  try {
+    response = await api(`/api/campaigns/${campaignId}/dashboard`, { signal: campaignController.signal });
+  } catch (error) {
+    if (error.name === "AbortError") return;
+    if (epoch === campaignEpoch) {
+      $("campaign-dashboard").innerHTML = `<p class="empty">Campaign could not be loaded. Try again.</p>`;
+      $("campaign-dashboard").setAttribute("aria-busy", "false");
+    }
+    return;
+  }
+  if (!response.ok) {
+    if (epoch === campaignEpoch) {
+      $("campaign-dashboard").innerHTML = `<p class="empty">Campaign could not be loaded. Try again.</p>`;
+      $("campaign-dashboard").setAttribute("aria-busy", "false");
+    }
+    return;
+  }
   const data = await response.json();
+  if (requestedId !== currentCampaignId || epoch !== campaignEpoch) return;
   const requirements = data.requirements;
   const rows = data.submissions;
+  const cells = rows.flatMap((row) => row.cells);
+  const readyCount = cells.filter((cell) => cell.effective_state === "pass").length;
+  const issueCount = cells.filter((cell) => cell.effective_state === "fail").length;
+  const reviewCount = cells.filter((cell) => ["uncertain", "human_review_required"].includes(cell.effective_state)).length;
   $("campaign-dashboard").innerHTML = `
     <header class="dashboard-head">
-      <div><span class="eyebrow">${data.campaign.is_showcase ? "Curated demonstration campaign" : "Campaign workspace"}</span><h2>${esc(data.campaign.name)}</h2><p>${esc(data.campaign.brief || "No brief recorded.")}</p></div>
+      <div><span class="eyebrow">Saved campaign</span><h2>${esc(data.campaign.name)}</h2><p>${esc(data.campaign.brief || "No brief recorded.")}</p></div>
       <button id="dashboard-new-submission" class="btn btn-primary" type="button">Add creator submission</button>
     </header>
-    <div class="dashboard-stats">
+    <div class="dashboard-stats campaign-summary-stats">
       <div><strong>${data.summary.submission_count}</strong><span>Creator submission${data.summary.submission_count === 1 ? "" : "s"}</span></div>
       <div><strong>${requirements.length}</strong><span>Confirmed requirements</span></div>
-      <div><strong>${data.summary.unresolved_count}</strong><span>Checks needing attention</span></div>
+      <div><strong>${readyCount}</strong><span>Passed checks</span></div>
+      <div><strong>${issueCount}</strong><span>Failed checks</span></div>
+      <div><strong>${reviewCount}</strong><span>Review needed</span></div>
     </div>
-    <section class="requirements-overview"><div class="section-heading"><div><span class="eyebrow">Confirmed before review</span><h3>Campaign requirements</h3></div><span class="confirmed-note">✓ Confirmed ${data.campaign.confirmed_at ? new Date(data.campaign.confirmed_at).toLocaleDateString() : ""}</span></div>
-      <ol>${requirements.map((rule) => `<li><span>${rule.ordinal + 1}</span><p><strong>${esc(rule.requirement_text)}</strong><small>${esc(rule.severity)} requirement</small></p></li>`).join("")}</ol>
-    </section>
+    <details class="campaign-requirements"><summary>Campaign requirements (${requirements.length})</summary><ol>${requirements.map((rule) => `<li><strong>R${rule.ordinal + 1}</strong> ${esc(rule.requirement_text)}</li>`).join("")}</ol></details>
     <section class="matrix-section"><div class="section-heading"><div><span class="eyebrow">Review operations</span><h3>Creator × requirement matrix</h3></div><span class="muted-inline">Select any result to open its evidence</span></div>
-      ${rows.length ? `<div class="matrix-scroll"><table class="review-matrix"><thead><tr><th scope="col">Creator / submission</th>${requirements.map((rule) => `<th scope="col"><span>R${rule.ordinal + 1}</span>${esc(rule.requirement_text)}</th>`).join("")}<th scope="col">Decision</th></tr></thead><tbody>${rows.map((row) => `<tr><th scope="row"><button type="button" data-submission="${esc(row.submission_id)}"><strong>${esc(row.creator_reference)}</strong><span>${esc(row.state.replaceAll("_", " "))} · ${row.unresolved_count} unresolved</span></button></th>${row.cells.map((cell) => `<td><button type="button" class="matrix-cell" data-submission="${esc(row.submission_id)}" data-rule="${esc(cell.rule_id)}" data-evidence="${esc(cell.evidence_id || "")}">${matrixStatus(cell.effective_state, cell.reviewed)}</button></td>`).join("")}<td>${row.final_decision ? matrixStatus(row.final_decision === "approve" ? "pass" : row.final_decision === "reject" ? "fail" : "uncertain", true) : `<span class="matrix-status">Not decided</span>`}</td></tr>`).join("")}</tbody></table></div>` : `<p class="empty">No creator submissions yet.</p>`}
+      ${rows.length ? `<div class="matrix-scroll"><table class="review-matrix"><thead><tr><th scope="col">Creator / submission</th>${requirements.map((rule) => `<th scope="col"><span>R${rule.ordinal + 1}</span>${esc(rule.requirement_text)}</th>`).join("")}<th scope="col">Decision</th></tr></thead><tbody>${rows.map((row) => `<tr><th scope="row"><button type="button" data-submission="${esc(row.submission_id)}"><strong>${esc(row.creator_reference)}</strong><span>${esc(labelState(row.state))} · ${row.unresolved_count} unresolved</span></button></th>${row.cells.map((cell, index) => `<td><button type="button" class="matrix-cell" aria-label="${esc(row.creator_reference)} — requirement ${index + 1}: ${esc(requirements[index]?.requirement_text)} — ${esc(labelState(cell.effective_state))}" data-submission="${esc(row.submission_id)}" data-rule="${esc(cell.rule_id)}">${matrixStatus(cell.effective_state, cell.reviewed)}</button></td>`).join("")}<td>${renderDecisionStatus(row.final_decision)}</td></tr>`).join("")}</tbody></table></div><div class="matrix-cards">${rows.map((row) => `<article><h4>${esc(row.creator_reference)}</h4><div class="mobile-decision"><span>Final decision</span>${renderDecisionStatus(row.final_decision)}</div>${row.cells.map((cell, index) => `<button type="button" data-submission="${esc(row.submission_id)}" data-rule="${esc(cell.rule_id)}" aria-label="${esc(row.creator_reference)} — requirement ${index + 1}: ${esc(requirements[index]?.requirement_text)} — ${esc(labelState(cell.effective_state))}"><span>R${index + 1}</span>${matrixStatus(cell.effective_state, cell.reviewed)}</button>`).join("")}</article>`).join("")}</div>` : `<p class="empty">No creator submissions yet.</p>`}
     </section>
-    ${data.campaign.is_showcase ? `<p class="source-disclosure">These are curated demonstration campaigns built from independently published, reuse-permitted creator videos. They are not commissioned brand submissions or endorsements of AdProof.</p>` : ""}`;
+    ${data.campaign.is_showcase ? `<p class="source-disclosure">Independent sources reviewed against saved campaign briefs. AdProof did not commission the videos; no endorsement is implied.</p>` : ""}`;
+  $("campaign-dashboard").setAttribute("aria-busy", "false");
   $("dashboard-new-submission").addEventListener("click", openNewSubmission);
-  $("campaign-dashboard").querySelectorAll("[data-submission]").forEach((button) => button.addEventListener("click", () => selectSubmission(button.dataset.submission, button.dataset.rule || null, button.dataset.evidence || null)));
+  $("campaign-dashboard").querySelectorAll("[data-submission]").forEach((button) => button.addEventListener("click", () => selectSubmission(button.dataset.submission, button.dataset.rule || null)));
 }
+
+$("campaign-picker").addEventListener("change", (event) => {
+  currentCampaignId = event.target.value;
+  loadCampaignDashboard(currentCampaignId);
+});
+
+$("requirement-picker").addEventListener("change", (event) => {
+  stopPlayback({ invalidateReport: false });
+  selectedRuleId = event.target.value;
+  renderRules(currentReport.rules, currentReport.permissions);
+});
 
 function openNewSubmission() {
   if (isDemoVisitor()) {
     openLogin(
-      "Log in to add a submission. Your private workspace will open here without leaving the showcase.",
+      "Log in to add a submission. Your private workspace will open here without leaving saved runs.",
       "submission"
     );
     return;
@@ -900,7 +878,7 @@ $("submission-form").addEventListener("submit", async (e) => {
   const f = new FormData(e.target);
   const file = f.get("file");
   const url = f.get("source_url");
-  const err0 = $("submission-error");
+  const err0 = $("submission-form-error");
   const directUpload = Boolean(integrityData?.input_capabilities?.direct_file_upload);
   if ((!directUpload || !file || !file.size) && !url) {
     err0.textContent = directUpload
@@ -939,7 +917,7 @@ $("submission-form").addEventListener("submit", async (e) => {
       }),
     });
   }
-  const err = $("submission-error");
+  const err = $("submission-form-error");
   if (!res.ok) {
     err.textContent = (await res.json()).detail ?? "Could not create the submission.";
     err.hidden = false;
@@ -1141,7 +1119,7 @@ async function renderAnalytics(campaignId) {
             p.overridden_away.count
               ? `<div class="pattern-warn">Reviewers overturned ${p.overridden_away.count} of these.
                  ${Object.entries(p.override_reasons).map(([r, n]) => `${esc(r)} x${n}`).join(", ")}.
-                 A cluster here usually means the rule or the retrieval is wrong, not the creator.</div>`
+                 A cluster here usually means the requirement needs review, not that every creator is wrong.</div>`
               : ""
           }
           <div class="analytics-links">${p.machine_failures.submission_ids
@@ -1255,10 +1233,12 @@ $("login-form").addEventListener("submit", async (e) => {
 });
 
 $("login-cancel").addEventListener("click", () => {
+  stopPlayback({ clearDetail: false, invalidateReport: false });
   pendingAuthIntent = null;
   $("login-dialog").close();
 });
 $("login-dialog").addEventListener("close", () => {
+  stopPlayback({ clearDetail: false, invalidateReport: false });
   pendingAuthIntent = null;
 });
 
@@ -1275,6 +1255,10 @@ $("auth-action").addEventListener("click", async () => {
 });
 
 async function boot() {
+  clearReportView("Loading saved verification runs…");
+  switchView("review");
+  submissionListController?.abort();
+  submissionListEpoch += 1;
   let me;
   try {
     let res = await fetch("/api/auth/me", { credentials: "same-origin" });
@@ -1285,33 +1269,31 @@ async function boot() {
     }
     if (!res.ok) {
       showApp();
-      openLogin("The public showcase is temporarily unavailable. Log in to access your workspace.");
+      openLogin("Saved runs are temporarily unavailable. Log in to access your workspace.");
       return;
     }
     me = await res.json();
   } catch {
     showApp();
-    openLogin("The public showcase is temporarily unavailable. Log in to access your workspace.");
+    openLogin("Saved runs are temporarily unavailable. Log in to access your workspace.");
     return;
   }
   if (location.search) history.replaceState({}, "", "/app");
   currentUser = me.user;
   currentWorkspaces = me.workspaces;
-  const showcase = currentWorkspaces.find((w) => w.is_showcase);
   if (isDemoVisitor()) {
-    $("who").textContent = "Viewing public demo";
+    $("who").textContent = "Viewing saved runs";
     $("auth-action").textContent = "Log in";
-    $("workspace-banner-copy").textContent =
-      "Explore completed evidence immediately. When you want to create a campaign or add a submission, log in and continue on this same page.";
-    $("workspace-capability").textContent = "Log in to create";
-    $("workspace-banner").hidden = false;
+    $("analytics-tab").hidden = true;
+    if (currentView === "analytics") currentView = "review";
   } else {
     $("who").textContent = me.user.name || me.user.email;
     $("auth-action").textContent = "Sign out";
-    $("workspace-banner").hidden = !showcase;
+    $("analytics-tab").hidden = false;
   }
   showApp();
   await Promise.all([loadIntegrity(), loadCampaigns(), loadSubmissions()]);
+  switchView("review");
 }
 
 boot();
