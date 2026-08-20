@@ -47,8 +47,8 @@ def test_same_app_url_opens_demo_and_write_ctas_escalate_to_login():
     assert 'class="review-matrix"' in js
     assert 'id="requirement-picker"' in html
     assert 'id="evidence-workspace"' in html
-    assert 'styles.css?v=22' in html
-    assert 'app.js?v=22' in html
+    assert 'styles.css?v=23' in html
+    assert 'app.js?v=23' in html
     assert "remain marked uncertain after human review" in js
     assert "requestedEpoch !== selectionEpoch" in js
     assert 'data.playback_mode === "full_source_context"' in js
@@ -80,6 +80,15 @@ def test_saved_run_information_architecture_and_copy_contract():
     assert 'if (view === "analytics" && isDemoVisitor()) view = "review"' in js
     assert "Continue with saved runs" in html
     assert 'href="/examples"' not in landing
+    assert 'by ${esc(d.decided_by)}' not in js
+    assert "No exact spoken match found" in js
+    assert "No prohibited phrase found" in js
+    assert "No qualifying visual moment found" in js
+    assert "No qualifying visual duration measured" in js
+    assert "No in-video disclosure found" in js
+    assert "Required sequence not detected" in js
+    assert "Needed: at least one" in js
+    assert "Allowed gap: up to ${threshold} seconds" in js
 
     banned = (
         "What this build does and does not do",

@@ -307,6 +307,29 @@ const FINAL_DECISION_LABELS = {
   escalate: "Escalated",
 };
 
+function zeroMeasurementCopy(rule) {
+  return {
+    required_spoken_phrase: "No exact spoken match found",
+    forbidden_spoken_claim: "No prohibited phrase found",
+    required_visual_event: "No qualifying visual moment found",
+    forbidden_visual_event: "No prohibited visual moment found",
+    min_visual_duration: "No qualifying visual duration measured",
+    max_visual_duration: "No qualifying visual duration measured",
+    disclosure_present: "No in-video disclosure found",
+    sequence: "Required sequence not detected",
+  }[rule.rule_type] || "No automated match found";
+}
+
+function neededCopy(rule, result) {
+  const threshold = result?.threshold_value;
+  if (threshold === null || threshold === undefined) return "";
+  if (["forbidden_spoken_claim", "forbidden_visual_event", "max_visual_duration"].includes(rule.rule_type)) return "";
+  if (rule.rule_type === "sequence") return `Allowed gap: up to ${threshold} seconds`;
+  if (Number(threshold) === 1) return "Needed: at least one";
+  const unit = result.measured_unit || (rule.rule_type === "min_visual_duration" ? "seconds" : "");
+  return `Needed: ${threshold}${unit ? ` ${unit}` : ""}`;
+}
+
 function renderAdjudication(report) {
   const adj = report.adjudication;
   const permitted = new Set(adj.permitted_decisions);
@@ -352,8 +375,7 @@ function renderAdjudication(report) {
     ? `<ul class="decision-history">${report.decisions
         .map(
           (d) => `<li>
-            <strong>${esc(FINAL_DECISION_LABELS[d.decision] ?? d.decision)}</strong>
-            by ${esc(d.decided_by)}
+            <strong class="decision-state">${esc(FINAL_DECISION_LABELS[d.decision] ?? d.decision)}</strong>
             <div class="decision-rationale">${esc(d.rationale)}</div>
           </li>`
         )
@@ -395,10 +417,11 @@ function renderRules(rules, permissions) {
     : override
     ? (rule.rule_type === "required_spoken_phrase" ? "Automated exact match" : "Automated check")
     : "Measured proof";
+  const thresholdCopy = res ? neededCopy(rule, res) : "";
   const measurement = subjectiveReview
     ? `<span>${measurementLabel}</span><strong>Full-source review</strong>`
     : res && res.measured_value !== null && res.measured_value !== undefined
-    ? `<span>${measurementLabel}</span><strong>${esc(res.measured_value)} ${esc(res.measured_unit || "")}</strong>${res.threshold_value !== null && res.threshold_value !== undefined ? `<small>Requirement: ${esc(res.threshold_value)} ${esc(res.measured_unit || "")}</small>` : ""}`
+    ? `<span>${measurementLabel}</span><strong>${Number(res.measured_value) === 0 ? esc(zeroMeasurementCopy(rule)) : `${esc(res.measured_value)} ${esc(res.measured_unit || "")}`}</strong>${thresholdCopy ? `<small>${esc(thresholdCopy)}</small>` : ""}`
     : `<span>${measurementLabel}</span><strong>${rule.evidence.length ? `${rule.evidence.length} cited moment${rule.evidence.length === 1 ? "" : "s"}` : "No cited moment"}</strong>`;
   const reviewedResolution = override
     ? `<p class="recorded-resolution"><strong>Recorded review: ${esc(labelState(override.human_state))}.</strong> ${esc(override.human_state === "pass" ? (rule.evidence.length ? "Reviewer confirmed this requirement in the cited evidence." : "Reviewer recorded this as met during full-source review.") : override.human_state === "fail" ? "Reviewer recorded that this requirement was not met." : "Reviewer kept this requirement unresolved.")}</p>`
