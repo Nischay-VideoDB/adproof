@@ -1251,39 +1251,61 @@ def get_report(
             .order_by(Rule.ordinal)
         )
     )
+    # Report projection is read-heavy and runs against a remote database in
+    # production. Load each version-scoped collection once, then preserve the
+    # existing rule/run grouping and evidence ordering in memory. This avoids
+    # one result/review query per rule and one evidence query per retrieval run.
+    result_rows = list(
+        session.scalars(
+            select(EvaluationResult).where(
+                EvaluationResult.submission_version_id == version.id
+            )
+        )
+    )
+    results_by_rule = {item.rule_id: item for item in result_rows}
+    retrieval_rows = list(
+        session.scalars(
+            select(RetrievalRun).where(
+                RetrievalRun.submission_version_id == version.id
+            )
+        )
+    )
+    runs_by_rule: dict[str, list[RetrievalRun]] = {}
+    for item in retrieval_rows:
+        runs_by_rule.setdefault(item.rule_id, []).append(item)
+    review_rows_all = list(
+        session.scalars(
+            select(RuleReview)
+            .where(RuleReview.submission_version_id == version.id)
+            .order_by(RuleReview.created_at)
+        )
+    )
+    reviews_by_rule: dict[str, list[RuleReview]] = {}
+    for item in review_rows_all:
+        reviews_by_rule.setdefault(item.rule_id, []).append(item)
+    run_ids = [item.id for item in retrieval_rows]
+    evidence_rows = list(
+        session.scalars(
+            select(EvidenceItem)
+            .where(EvidenceItem.retrieval_run_id.in_(run_ids))
+            .order_by(EvidenceItem.retrieval_run_id, EvidenceItem.start_seconds)
+        )
+    ) if run_ids else []
+    evidence_by_run: dict[str, list[EvidenceItem]] = {}
+    for item in evidence_rows:
+        evidence_by_run.setdefault(item.retrieval_run_id, []).append(item)
 
     rule_views = []
     is_saved_workspace = (
         submission.workspace_id == os.getenv("ADPROOF_SHOWCASE_WORKSPACE_ID")
     )
     for rule in rules:
-        result = session.scalar(
-            select(EvaluationResult).where(
-                EvaluationResult.submission_version_id == version.id,
-                EvaluationResult.rule_id == rule.id,
-            )
-        )
-        runs = list(
-            session.scalars(
-                select(RetrievalRun).where(
-                    RetrievalRun.submission_version_id == version.id,
-                    RetrievalRun.rule_id == rule.id,
-                )
-            )
-        )
+        result = results_by_rule.get(rule.id)
+        runs = runs_by_rule.get(rule.id, [])
         run_views = []
         evidence_views = []
         result_evidence_ids = set(result.evidence_ids or []) if result else set()
-        review_rows = list(
-            session.scalars(
-                select(RuleReview)
-                .where(
-                    RuleReview.submission_version_id == version.id,
-                    RuleReview.rule_id == rule.id,
-                )
-                .order_by(RuleReview.created_at)
-            )
-        )
+        review_rows = reviews_by_rule.get(rule.id, [])
         cited_evidence_ids = set(result_evidence_ids)
         for review in review_rows:
             cited_evidence_ids.update(review.evidence_viewed or [])
@@ -1309,11 +1331,7 @@ def get_report(
                     "linked_count": 0,
                 }
             run_views.append(run_view)
-            for item in session.scalars(
-                select(EvidenceItem)
-                .where(EvidenceItem.retrieval_run_id == run.id)
-                .order_by(EvidenceItem.start_seconds)
-            ):
+            for item in evidence_by_run.get(run.id, []):
                 # Once evaluation exists, its immutable evidence membership is
                 # authoritative. Reimplementing evaluator filters here causes
                 # projection drift (notably for visual action qualification).
@@ -1535,7 +1553,30 @@ def get_report(
         )
 
     gate = adjudicate(
-        _rule_views(session, version), processing_complete=all_settled
+        [
+            RuleView(
+                rule_id=rule.id,
+                requirement_text=rule.requirement_text,
+                severity=rule.severity,
+                machine_state=(
+                    results_by_rule[rule.id].state
+                    if rule.id in results_by_rule
+                    else None
+                ),
+                absence_class=(
+                    results_by_rule[rule.id].absence_class
+                    if rule.id in results_by_rule
+                    else None
+                ),
+                human_state=(
+                    reviews_by_rule[rule.id][-1].human_state
+                    if reviews_by_rule.get(rule.id)
+                    else None
+                ),
+            )
+            for rule in rules
+        ],
+        processing_complete=all_settled,
     )
     decisions = list(
         session.scalars(
