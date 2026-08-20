@@ -44,11 +44,11 @@ def test_same_app_url_opens_demo_and_write_ctas_escalate_to_login():
     assert '$("new-submission").disabled = false' in js
     assert '$("new-campaign").disabled = false' in js
     assert "showLogin" not in js
-    assert 'class="review-matrix"' in js
+    assert 'class="review-matrix review-matrix-transposed"' in js
     assert 'id="requirement-picker"' in html
     assert 'id="evidence-workspace"' in html
-    assert 'styles.css?v=23' in html
-    assert 'app.js?v=23' in html
+    assert 'styles.css?v=24' in html
+    assert 'app.js?v=24' in html
     assert "remain marked uncertain after human review" in js
     assert "requestedEpoch !== selectionEpoch" in js
     assert 'data.playback_mode === "full_source_context"' in js
@@ -73,8 +73,12 @@ def test_saved_run_information_architecture_and_copy_contract():
     assert '<select id="submission-picker"' not in html
     assert '<select id="requirement-picker"' not in html
     assert '<select id="campaign-picker"' not in html
-    assert 'class="review-matrix"' in js
+    assert 'class="review-matrix review-matrix-transposed"' in js
     assert 'class="matrix-cards"' in js
+    assert 'class="review-matrix review-matrix-transposed"' in js
+    assert 'scope="row" class="matrix-requirement"' in js
+    assert 'class="creator-column-head"' in js
+    assert 'class="mobile-requirement"' in js
     assert 'aria-label="${esc(row.creator_reference)} — requirement' in js
     assert '$("analytics-tab").hidden = true' in js
     assert 'if (view === "analytics" && isDemoVisitor()) view = "review"' in js
