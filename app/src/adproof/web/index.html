@@ -3,12 +3,13 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Crect x=%274%27 y=%272%27 width=%275%27 height=%2712%27 rx=%271%27 fill=%27%230F7A5A%27/%3E%3C/svg%3E" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Crect x=%274%27 y=%272%27 width=%275%27 height=%2712%27 rx=%271%27 fill=%27%23F24E1E%27/%3E%3C/svg%3E" />
 <title>AdProof — campaign verification</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/styles.css?v=24" />
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css?v=26" />
+  <link rel="stylesheet" href="/static/atomic-design.css?v=37" />
 </head>
 <body>
 
@@ -39,7 +40,7 @@
 
 <!-- ── app ──────────────────────────────────────────────────────────────── -->
 <div id="app-view" hidden>
-  <header class="topbar">
+  <header class="topbar ap-o-app-header">
     <div class="brand"><span class="brand-mark">▮</span> AdProof</div>
     <nav class="tabs">
       <button class="tab active" role="tab" aria-selected="true" data-view="review">Submissions</button>
@@ -53,16 +54,17 @@
   </header>
 
   <!-- campaigns -->
-  <main id="view-campaigns" class="view view-campaigns" hidden>
-    <section class="campaign-intro">
+  <main id="view-campaigns" class="view view-campaigns ap-t-campaign-workbench" hidden>
+    <section class="campaign-intro ap-o-page-header">
       <div>
-        <span class="eyebrow">Campaign portfolio</span>
+        <span class="eyebrow ap-a-eyebrow">Campaign portfolio</span>
         <h1>Compare every submission against the confirmed brief.</h1>
+        <p>See requirement coverage across creators, then open any result directly in its evidence.</p>
       </div>
-      <button id="new-campaign" class="btn btn-primary">New campaign</button>
+      <button id="new-campaign" class="btn btn-primary ap-a-button ap-a-button-primary">New campaign</button>
     </section>
-    <section class="campaign-browser">
-      <div class="selection-panel"><span class="selection-label">Campaigns</span><div id="campaign-picker" class="selection-list" role="listbox" aria-label="Campaigns"></div></div>
+    <section class="campaign-browser ap-o-selection-rail">
+      <div class="selection-panel ap-o-selection-rail-panel"><span class="selection-label ap-a-label">Campaigns</span><div id="campaign-picker" class="selection-list" role="listbox" aria-label="Campaigns"></div></div>
       <p id="campaigns-empty" class="empty" hidden>No campaigns yet. Create one and confirm its requirements before adding submissions.</p>
       <div id="campaign-dashboard" class="campaign-dashboard" aria-live="polite">
         <p class="empty placeholder">Select a campaign to see its brief, confirmed requirements, and creator review matrix.</p>
@@ -71,11 +73,14 @@
   </main>
 
   <!-- review -->
-  <main id="view-review" class="view view-single">
+  <main id="view-review" class="view view-single ap-t-submission-workbench">
     <section class="panel saved-runs-panel" id="report-panel">
+      <header class="workbench-heading ap-o-page-header">
+        <div><span class="eyebrow ap-a-eyebrow">Review workspace</span><h1>Verify creator submissions.</h1><p>Move from campaign requirement to exact evidence and recorded review outcome.</p></div>
+      </header>
       <div class="run-toolbar">
-        <div class="selection-panel selection-panel-wide"><span class="selection-label">Saved verification runs</span><div id="submission-picker" class="selection-list selection-list-runs" role="listbox" aria-label="Saved verification runs"></div></div>
-        <button id="new-submission" class="btn btn-primary">New submission</button>
+        <div class="selection-panel selection-panel-wide ap-o-selection-rail-panel"><span class="selection-label ap-a-label">Saved verification runs</span><div id="submission-picker" class="selection-list selection-list-runs" role="listbox" aria-label="Saved verification runs"></div></div>
+        <button id="new-submission" class="btn btn-primary ap-a-button ap-a-button-primary">New submission</button>
       </div>
       <p id="submissions-empty" class="empty" hidden>
         No submissions yet. Create a campaign with requirements, then submit a
@@ -95,13 +100,13 @@
           <button id="retry-btn" class="btn" hidden>Retry failed stages</button>
         </div>
         <div id="submission-error" class="alert alert-error" hidden></div>
-        <div id="submission-summary" class="summary-strip"></div>
+        <div id="submission-summary" class="summary-strip ap-o-score-strip"></div>
         <details id="source-attribution" class="source-license" hidden><summary>Source &amp; reuse terms</summary><div></div></details>
 
-        <section id="evidence-workspace" class="evidence-workspace" aria-live="polite">
+        <section id="evidence-workspace" class="evidence-workspace ap-o-evidence-stage" aria-live="polite">
           <div class="evidence-toolbar">
-            <div class="selection-panel selection-panel-wide"><span class="selection-label">Requirements</span><div id="requirement-picker" class="selection-list selection-list-requirements" role="listbox" aria-label="Requirements"></div></div>
-            <button id="full-source-btn" class="btn" type="button">View full source</button>
+            <div class="selection-panel selection-panel-wide"><span class="selection-label ap-a-label">Requirements</span><div id="requirement-picker" class="selection-list selection-list-requirements" role="listbox" aria-label="Requirements"></div></div>
+            <button id="full-source-btn" class="btn ap-a-button" type="button">View full source</button>
           </div>
           <div id="requirement-content">
             <div class="requirement-head">
@@ -109,17 +114,19 @@
               <span id="requirement-state" class="result-chip"></span>
             </div>
             <div id="requirement-measurement" class="measurement-card"></div>
-            <div class="player-shell">
-            <video id="player" controls playsinline preload="metadata"></video>
-            <div id="detection-marker" class="detection-marker" hidden><span></span></div>
-            <p id="player-note" class="note">Choose an evidence moment to play it.</p>
+            <div class="ap-evidence-grid">
+              <div class="player-shell ap-o-player-stage">
+                <video id="player" controls playsinline preload="metadata"></video>
+                <div id="detection-marker" class="detection-marker ap-a-detection-marker" hidden><span></span></div>
+                <p id="player-note" class="note">Choose an evidence moment to play it.</p>
+              </div>
+              <div id="evidence-list" class="ap-o-evidence-list"></div>
             </div>
-            <div id="evidence-list"></div>
             <div id="review-controls"></div>
           </div>
         </section>
 
-        <section class="decision-section"><div class="section-heading"><div><span class="eyebrow">Human decision</span><h3>Review outcome</h3></div></div><div id="adjudication-slot"></div></section>
+        <section class="decision-section ap-o-review-outcome"><div class="section-heading"><div><span class="eyebrow ap-a-eyebrow">Human decision</span><h3>Review outcome</h3></div></div><div id="adjudication-slot"></div></section>
 
       </div>
     </section>
@@ -253,6 +260,6 @@
 </dialog>
 
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
-  <script src="/static/app.js?v=24"></script>
+  <script src="/static/app.js?v=32"></script>
 </body>
 </html>

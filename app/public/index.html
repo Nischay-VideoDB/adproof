@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Crect x=%274%27 y=%272%27 width=%275%27 height=%2712%27 rx=%271%27 fill=%27%230F7A5A%27/%3E%3C/svg%3E" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Crect x=%274%27 y=%272%27 width=%275%27 height=%2712%27 rx=%271%27 fill=%27%23F24E1E%27/%3E%3C/svg%3E" />
 <title>AdProof - Proof the brief was followed</title>
 <meta name="description" content="AdProof checks creator videos against agreed campaign requirements and returns the timestamped moment behind every result.">
 <meta property="og:title" content="AdProof">
@@ -50,6 +50,8 @@ body { background:var(--bg); color:var(--text); font-family:Geist, sans-serif; -
 .hair { border-color:var(--line); }
 .t2 { color:var(--text-2); }
 .acc { color:var(--accent); }
+.dark .adproof-wordmark { color:#fff; }
+.dark .adproof-wordmark .acc { color:#F24E1E; }
 
 .reveal { opacity:0; transform:translateY(18px); transition:opacity .7s cubic-bezier(.16,1,.3,1), transform .7s cubic-bezier(.16,1,.3,1); }
 .reveal.in { opacity:1; transform:none; }
@@ -81,7 +83,7 @@ figure img { border-radius:12px; }
 <!-- nav: single line, 64px -->
 <header class="sticky top-0 z-50 backdrop-blur-md hair border-b" style="background:color-mix(in srgb, var(--bg) 85%, transparent)">
   <nav class="max-w-shell mx-auto px-6 h-16 flex items-center gap-8">
-    <a href="#" class="flex items-center gap-2 font-semibold tracking-tight">
+    <a href="#" class="adproof-wordmark flex items-center gap-2 font-semibold tracking-tight">
       <span class="acc text-lg leading-none">◤</span> AdProof
     </a>
     <div class="hidden md:flex items-center gap-6 text-[14px] t2">
@@ -317,7 +319,7 @@ figure img { border-radius:12px; }
 
 <footer class="border-t hair py-10">
   <div class="max-w-shell mx-auto px-6 flex flex-wrap items-center justify-between gap-5">
-    <span class="flex items-center gap-2 font-semibold"><span class="acc">◤</span> AdProof</span>
+    <span class="adproof-wordmark flex items-center gap-2 font-semibold"><span class="acc">◤</span> AdProof</span>
     <p class="text-[13px] t2">&copy; <span id="year"></span> AdProof.</p>
   </div>
 </footer>

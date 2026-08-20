@@ -11,6 +11,7 @@ def test_deployed_and_source_web_assets_are_identical():
     pairs = (
         ("public/static/app.js", "src/adproof/web/app.js"),
         ("public/static/styles.css", "src/adproof/web/styles.css"),
+        ("public/static/atomic-design.css", "src/adproof/web/atomic-design.css"),
         ("public/app/index.html", "src/adproof/web/index.html"),
         ("public/index.html", "src/adproof/web/landing.html"),
     )
@@ -47,8 +48,9 @@ def test_same_app_url_opens_demo_and_write_ctas_escalate_to_login():
     assert 'class="review-matrix review-matrix-transposed"' in js
     assert 'id="requirement-picker"' in html
     assert 'id="evidence-workspace"' in html
-    assert 'styles.css?v=24' in html
-    assert 'app.js?v=24' in html
+    assert 'styles.css?v=26' in html
+    assert 'atomic-design.css?v=37' in html
+    assert 'app.js?v=32' in html
     assert "remain marked uncertain after human review" in js
     assert "requestedEpoch !== selectionEpoch" in js
     assert 'data.playback_mode === "full_source_context"' in js
@@ -78,6 +80,8 @@ def test_saved_run_information_architecture_and_copy_contract():
     assert 'class="review-matrix review-matrix-transposed"' in js
     assert 'scope="row" class="matrix-requirement"' in js
     assert 'class="creator-column-head"' in js
+    assert 'class="requirement-column-head"' in js
+    assert 'Requirements v${' not in js
     assert 'class="mobile-requirement"' in js
     assert 'aria-label="${esc(row.creator_reference)} — requirement' in js
     assert '$("analytics-tab").hidden = true' in js

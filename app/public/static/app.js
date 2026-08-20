@@ -240,7 +240,7 @@ async function loadSubmissions() {
   const picker = $("submission-picker");
   picker.innerHTML = subs
     .map(
-      (s) => `<button type="button" role="option" aria-selected="${s.id === currentSubmissionId}" class="selection-row ${s.id === currentSubmissionId ? "active" : ""}" data-submission-choice="${esc(s.id)}"><strong>${esc(s.creator_reference)}</strong><span>${esc(s.campaign_name ?? "Campaign")}</span><small>${esc(labelState(s.state))}</small></button>`
+      (s, index) => `<button type="button" role="option" aria-selected="${s.id === currentSubmissionId}" class="selection-row selection-row-run ap-m-selection-row state-${esc(s.state)} ${s.id === currentSubmissionId ? "active" : ""}" data-submission-choice="${esc(s.id)}"><span class="selection-ordinal ap-a-count">${String(index + 1).padStart(2, "0")}</span><strong>${esc(s.creator_reference)}</strong><span>${esc(s.campaign_name ?? "Campaign")}</span><small class="ap-a-badge">${esc(labelState(s.state))}</small></button>`
     )
     .join("");
   picker.querySelectorAll("[data-submission-choice]").forEach((button) =>
@@ -269,9 +269,9 @@ function renderEvidence(ev) {
       ? "Context"
       : "Measured proof";
   return `
-    <button class="evidence evidence-${esc(ev.evidence_kind)} ${ev.id === currentEvidenceId ? "active" : ""} btn-play"
+    <button class="evidence evidence-${esc(ev.evidence_kind)} ap-m-evidence-row ${ev.id === currentEvidenceId ? "active" : ""} btn-play"
             data-evidence="${esc(ev.id)}" type="button">
-      <span class="evidence-time">${fmtTime(ev.start_seconds)}${
+      <span class="evidence-time ap-a-timestamp">${fmtTime(ev.start_seconds)}${
             ev.end_seconds !== null && ev.end_seconds !== undefined
               ? " – " + fmtTime(ev.end_seconds)
               : ""
@@ -360,7 +360,7 @@ function renderAdjudication(report) {
   const buttons = ["approve", "request_changes", "escalate", "reject"]
     .map((d) => {
       const enabled = permitted.has(d) && mayAct(d);
-      return `<button class="btn decision-btn"
+      return `<button class="btn ap-a-button decision-btn"
         data-decision="${d}" ${enabled ? "" : "disabled"}
         title="${enabled ? "" : "Not available until every requirement is resolved"}">
         ${esc(DECISION_LABELS[d])}
@@ -369,12 +369,12 @@ function renderAdjudication(report) {
     .join("");
   const actions = report.permissions.read_only
     ? ""
-    : `<div class="decision-actions">${buttons}</div>`;
+    : `<div class="decision-actions ap-m-action-group">${buttons}</div>`;
 
   const history = report.decisions.length
     ? `<ul class="decision-history">${report.decisions
         .map(
-          (d) => `<li>
+          (d) => `<li class="decision-${esc(d.decision)}">
             <strong class="decision-state">${esc(FINAL_DECISION_LABELS[d.decision] ?? d.decision)}</strong>
             <div class="decision-rationale">${esc(d.rationale)}</div>
           </li>`
@@ -383,7 +383,7 @@ function renderAdjudication(report) {
     : "";
 
   return `
-    <div class="adjudication">
+    <div class="adjudication ap-m-outcome-summary">
       <ul class="adj-reasons">${presentationReasons
         .map((r) => `<li>${esc(r)}</li>`)
         .join("")}</ul>
@@ -404,7 +404,7 @@ function renderRules(rules, permissions) {
   }
   $("requirement-picker").innerHTML = rules.map((rule) => {
     const state = effectiveState(rule);
-    return `<button type="button" role="option" aria-selected="${rule.id === selectedRuleId}" class="selection-row requirement-choice ${rule.id === selectedRuleId ? "active" : ""}" data-rule-choice="${esc(rule.id)}"><strong>R${rule.ordinal + 1} · ${esc(rule.requirement_text)}</strong><small>${esc(effectiveStateLabel(rule))}</small></button>`;
+    return `<button type="button" role="option" aria-selected="${rule.id === selectedRuleId}" class="selection-row selection-row-requirement ap-m-selection-row requirement-choice result-${esc(state)} ${rule.id === selectedRuleId ? "active" : ""}" data-rule-choice="${esc(rule.id)}"><span class="selection-ordinal ap-a-count">R${rule.ordinal + 1}</span><strong>${esc(rule.requirement_text)}</strong><small class="ap-a-badge">${esc(effectiveStateLabel(rule))}</small></button>`;
   }).join("");
 
   const rule = rules.find((item) => item.id === selectedRuleId);
@@ -435,12 +435,12 @@ function renderRules(rules, permissions) {
       }[rule.no_hit_receipt.state] || "No qualifying moment")}</strong><p>${rule.no_hit_receipt.coverage_complete ? "The completed review recorded no qualifying moment for this requirement." : "The available coverage cannot support an absence conclusion."}</p></div>`
     : "";
   const reviewControls = res && permissions.can_review
-    ? `<div class="review-actions"><button class="btn btn-small" data-confirm="${esc(rule.id)}">Confirm finding</button><button class="btn btn-small" data-override="${esc(rule.id)}">Record exception</button></div>`
+    ? `<div class="review-actions ap-m-action-group"><button class="btn btn-small ap-a-button" data-confirm="${esc(rule.id)}">Confirm finding</button><button class="btn btn-small ap-a-button" data-override="${esc(rule.id)}">Record exception</button></div>`
     : "";
   $("requirement-number").textContent = `Requirement ${rule.ordinal + 1}`;
   $("evidence-title").textContent = rule.requirement_text;
   $("requirement-state").textContent = effectiveStateLabel(rule);
-  $("requirement-state").className = `result-chip result-${effective}`;
+  $("requirement-state").className = `result-chip ap-a-status-chip result-${effective}`;
   $("requirement-measurement").innerHTML = measurement + reviewedResolution;
   $("review-controls").innerHTML = reviewControls;
 
@@ -563,13 +563,15 @@ async function loadEvidencePlayback(evidenceId, autoplay = false) {
   const submissionId = currentSubmissionId;
   const ruleId = selectedRuleId;
   const epoch = stopPlayback({ clearDetail: false, invalidateReport: false });
-  const data = await fetchPlayback(evidenceId, epoch, submissionId, ruleId);
-  if (!data) return;
-  if (epoch !== mediaEpoch || submissionId !== currentSubmissionId || ruleId !== selectedRuleId) return;
+  // Selection is immediate; prepared playback may take a few seconds to
+  // arrive, but the evidence workspace should never look unselected meanwhile.
   currentEvidenceId = evidenceId;
   document.querySelectorAll(".btn-play").forEach((button) =>
     button.classList.toggle("active", button.dataset.evidence === evidenceId)
   );
+  const data = await fetchPlayback(evidenceId, epoch, submissionId, ruleId);
+  if (!data) return;
+  if (epoch !== mediaEpoch || submissionId !== currentSubmissionId || ruleId !== selectedRuleId) return;
   const player = $("player");
   const fullSourceContext = data.playback_mode === "full_source_context";
   const stillCurrent = () => epoch === mediaEpoch && submissionId === currentSubmissionId && ruleId === selectedRuleId && evidenceId === currentEvidenceId;
@@ -689,7 +691,7 @@ async function loadReport() {
   $("report-sub").textContent = `${data.campaign.name ?? "Campaign"} · ${data.rules.length} requirements`;
   const chip = $("submission-state");
   chip.textContent = labelState(data.submission.state);
-  chip.className = `state-chip state-${data.submission.state}`;
+  chip.className = `state-chip ap-a-status-chip state-${data.submission.state}`;
 
   const errBox = $("submission-error");
   if (data.submission.error_summary) {
@@ -707,9 +709,9 @@ async function loadReport() {
   const counts = { pass: 0, fail: 0, uncertain: 0, human_review_required: 0 };
   data.rules.forEach((rule) => { const state = effectiveState(rule); if (state in counts) counts[state] += 1; });
   $("submission-summary").innerHTML = [
-    ["Requirements", data.rules.length], ["Passed", counts.pass], ["Failed", counts.fail],
-    ["Uncertain", counts.uncertain], ["Review required", counts.human_review_required],
-  ].map(([label, value]) => `<div><strong>${value}</strong><span>${label}</span></div>`).join("");
+    ["Requirements", data.rules.length, "requirements"], ["Passed", counts.pass, "pass"], ["Failed", counts.fail, "fail"],
+    ["Uncertain", counts.uncertain, "uncertain"], ["Review required", counts.human_review_required, "review"],
+  ].map(([label, value, tone]) => `<div class="metric-tile ap-m-metric-tile metric-${tone}${Number(value) === 0 ? " metric-zero" : ""}"><strong class="ap-a-count">${value}</strong><span>${label}</span></div>`).join("");
   const sourceBox = $("source-attribution");
   if (data.source_attribution) {
     const source = data.source_attribution;
@@ -780,8 +782,8 @@ async function loadCampaigns() {
     currentCampaignId = campaigns[0]?.id || null;
   }
   $("campaigns-empty").hidden = campaigns.length > 0;
-  $("campaign-picker").innerHTML = campaigns.map((c) =>
-    `<button type="button" role="option" aria-selected="${c.id === currentCampaignId}" class="selection-row ${c.id === currentCampaignId ? "active" : ""}" data-campaign-choice="${esc(c.id)}"><strong>${esc(c.name)}</strong><span>${esc(c.workspace_name || "Workspace")}</span><small>${c.rule_set_version ? `Requirements v${esc(c.rule_set_version)}` : "Requirements pending"}</small></button>`
+  $("campaign-picker").innerHTML = campaigns.map((c, index) =>
+    `<button type="button" role="option" aria-selected="${c.id === currentCampaignId}" class="selection-row selection-row-campaign ap-m-selection-row ${c.id === currentCampaignId ? "active" : ""}" data-campaign-choice="${esc(c.id)}"><span class="selection-ordinal ap-a-count">${String(index + 1).padStart(2, "0")}</span><strong>${esc(c.name)}</strong></button>`
   ).join("");
   $("campaign-picker").querySelectorAll("[data-campaign-choice]").forEach((button) =>
     button.addEventListener("click", () => {
@@ -810,12 +812,12 @@ async function loadCampaigns() {
 
 function matrixStatus(state, reviewed = false) {
   const icon = state === "pass" ? "✓" : state === "fail" ? "!" : state === "processing" ? "…" : "?";
-  return `<span class="matrix-status result-${esc(state)}"><span aria-hidden="true">${icon}</span>${esc(STATE_LABEL[state] || state)}${reviewed ? " · reviewed" : ""}</span>`;
+  return `<span class="matrix-status ap-a-status-chip result-${esc(state)}"><span aria-hidden="true">${icon}</span>${esc(STATE_LABEL[state] || state)}${reviewed ? " · reviewed" : ""}</span>`;
 }
 
 function renderDecisionStatus(decision) {
-  if (!decision) return `<span class="matrix-status">Not decided</span>`;
-  return `<span class="matrix-status decision-${esc(decision)}"><span aria-hidden="true">${decision === "approve" ? "✓" : decision === "reject" ? "!" : "↗"}</span>${esc(FINAL_DECISION_LABELS[decision] || labelState(decision))}</span>`;
+  if (!decision) return `<span class="matrix-status ap-a-status-chip">Not decided</span>`;
+  return `<span class="matrix-status ap-a-status-chip decision-${esc(decision)}"><span aria-hidden="true">${decision === "approve" ? "✓" : decision === "reject" ? "!" : "↗"}</span>${esc(FINAL_DECISION_LABELS[decision] || labelState(decision))}</span>`;
 }
 
 async function loadCampaignDashboard(campaignId) {
@@ -859,20 +861,20 @@ async function loadCampaignDashboard(campaignId) {
   const issueCount = cells.filter((cell) => cell.effective_state === "fail").length;
   const reviewCount = cells.filter((cell) => ["uncertain", "human_review_required"].includes(cell.effective_state)).length;
   $("campaign-dashboard").innerHTML = `
-    <header class="dashboard-head">
+    <header class="dashboard-head ap-o-campaign-brief">
       <div><span class="eyebrow">Saved campaign</span><h2>${esc(data.campaign.name)}</h2><p>${esc(data.campaign.brief || "No brief recorded.")}</p></div>
       <button id="dashboard-new-submission" class="btn btn-primary" type="button">Add creator submission</button>
     </header>
-    <div class="dashboard-stats campaign-summary-stats">
-      <div><strong>${data.summary.submission_count}</strong><span>Creator submission${data.summary.submission_count === 1 ? "" : "s"}</span></div>
-      <div><strong>${requirements.length}</strong><span>Confirmed requirements</span></div>
-      <div><strong>${readyCount}</strong><span>Passed checks</span></div>
-      <div><strong>${issueCount}</strong><span>Failed checks</span></div>
-      <div><strong>${reviewCount}</strong><span>Review needed</span></div>
+    <div class="dashboard-stats campaign-summary-stats ap-o-score-strip">
+      <div class="metric-tile ap-m-metric-tile metric-neutral"><strong class="ap-a-count">${data.summary.submission_count}</strong><span>Creator submission${data.summary.submission_count === 1 ? "" : "s"}</span></div>
+      <div class="metric-tile ap-m-metric-tile metric-neutral"><strong class="ap-a-count">${requirements.length}</strong><span>Confirmed requirements</span></div>
+      <div class="metric-tile ap-m-metric-tile metric-pass${readyCount === 0 ? " metric-zero" : ""}"><strong class="ap-a-count">${readyCount}</strong><span>Passed checks</span></div>
+      <div class="metric-tile ap-m-metric-tile metric-fail${issueCount === 0 ? " metric-zero" : ""}"><strong class="ap-a-count">${issueCount}</strong><span>Failed checks</span></div>
+      <div class="metric-tile ap-m-metric-tile metric-review${reviewCount === 0 ? " metric-zero" : ""}"><strong class="ap-a-count">${reviewCount}</strong><span>Review needed</span></div>
     </div>
-    <details class="campaign-requirements"><summary>Campaign requirements (${requirements.length})</summary><ol>${requirements.map((rule) => `<li><strong>R${rule.ordinal + 1}</strong> ${esc(rule.requirement_text)}</li>`).join("")}</ol></details>
-    <section class="matrix-section"><div class="section-heading"><div><span class="eyebrow">Review operations</span><h3>Requirement × creator matrix</h3></div><span class="muted-inline">Select any result to open its evidence</span></div>
-      ${rows.length ? `<div class="matrix-scroll"><table class="review-matrix review-matrix-transposed" style="min-width:${Math.max(720, 360 + rows.length * 180)}px"><thead><tr><th scope="col">Requirement</th>${rows.map((row) => `<th scope="col" class="creator-column-head"><strong>${esc(row.creator_reference)}</strong><span>${esc(labelState(row.state))} · ${row.unresolved_count} unresolved</span>${renderDecisionStatus(row.final_decision)}</th>`).join("")}</tr></thead><tbody>${requirements.map((rule, index) => `<tr><th scope="row" class="matrix-requirement"><span>R${rule.ordinal + 1}</span><strong>${esc(rule.requirement_text)}</strong></th>${rows.map((row) => { const cell = row.cells[index]; return `<td><button type="button" class="matrix-cell" aria-label="${esc(row.creator_reference)} — requirement ${index + 1}: ${esc(rule.requirement_text)} — ${esc(labelState(cell.effective_state))}" data-submission="${esc(row.submission_id)}" data-rule="${esc(cell.rule_id)}">${matrixStatus(cell.effective_state, cell.reviewed)}</button></td>`; }).join("")}</tr>`).join("")}</tbody></table></div><div class="matrix-cards">${rows.map((row) => `<article><h4>${esc(row.creator_reference)}</h4><div class="mobile-decision"><span>Final decision</span>${renderDecisionStatus(row.final_decision)}</div>${row.cells.map((cell, index) => `<button type="button" data-submission="${esc(row.submission_id)}" data-rule="${esc(cell.rule_id)}" aria-label="${esc(row.creator_reference)} — requirement ${index + 1}: ${esc(requirements[index]?.requirement_text)} — ${esc(labelState(cell.effective_state))}"><span class="mobile-requirement"><strong>R${index + 1}</strong>${esc(requirements[index]?.requirement_text)}</span>${matrixStatus(cell.effective_state, cell.reviewed)}</button>`).join("")}</article>`).join("")}</div>` : `<p class="empty">No creator submissions yet.</p>`}
+    <section class="campaign-requirements ap-o-requirement-set" aria-labelledby="campaign-requirements-title"><div class="section-heading"><div><span class="eyebrow ap-a-eyebrow">Confirmed brief</span><h3 id="campaign-requirements-title">Campaign requirements</h3></div><span class="muted-inline">${requirements.length} requirements</span></div><ol>${requirements.map((rule) => `<li class="ap-m-requirement-card"><strong class="ap-a-count">R${rule.ordinal + 1}</strong><span>${esc(rule.requirement_text)}</span></li>`).join("")}</ol></section>
+    <section class="matrix-section ap-o-requirement-matrix"><div class="section-heading"><div><span class="eyebrow ap-a-eyebrow">Review operations</span><h3>Requirement × creator matrix</h3></div><span class="muted-inline">Select any result to open its evidence</span></div>
+      ${rows.length ? `<div class="matrix-scroll"><table class="review-matrix review-matrix-transposed" style="min-width:${Math.max(720, 360 + rows.length * 180)}px"><thead><tr><th scope="col" class="requirement-column-head">Requirement</th>${rows.map((row) => `<th scope="col" class="creator-column-head"><strong>${esc(row.creator_reference)}</strong><span>${esc(labelState(row.state))} · ${row.unresolved_count} unresolved</span></th>`).join("")}</tr></thead><tbody>${requirements.map((rule, index) => `<tr><th scope="row" class="matrix-requirement"><span>R${rule.ordinal + 1}</span><strong>${esc(rule.requirement_text)}</strong></th>${rows.map((row) => { const cell = row.cells[index]; return `<td><button type="button" class="matrix-cell" aria-label="${esc(row.creator_reference)} — requirement ${index + 1}: ${esc(rule.requirement_text)} — ${esc(labelState(cell.effective_state))}" data-submission="${esc(row.submission_id)}" data-rule="${esc(cell.rule_id)}">${matrixStatus(cell.effective_state, cell.reviewed)}</button></td>`; }).join("")}</tr>`).join("")}</tbody></table></div><div class="matrix-cards">${rows.map((row) => `<article><h4>${esc(row.creator_reference)}</h4><div class="mobile-decision"><span>Final decision</span>${renderDecisionStatus(row.final_decision)}</div>${row.cells.map((cell, index) => `<button type="button" data-submission="${esc(row.submission_id)}" data-rule="${esc(cell.rule_id)}" aria-label="${esc(row.creator_reference)} — requirement ${index + 1}: ${esc(requirements[index]?.requirement_text)} — ${esc(labelState(cell.effective_state))}"><span class="mobile-requirement"><strong>R${index + 1}</strong>${esc(requirements[index]?.requirement_text)}</span>${matrixStatus(cell.effective_state, cell.reviewed)}</button>`).join("")}</article>`).join("")}</div>` : `<p class="empty">No creator submissions yet.</p>`}
     </section>
     ${data.campaign.is_showcase ? `<p class="source-disclosure">Independent sources reviewed against saved campaign briefs. AdProof did not commission the videos; no endorsement is implied.</p>` : ""}`;
   $("campaign-dashboard").setAttribute("aria-busy", "false");
