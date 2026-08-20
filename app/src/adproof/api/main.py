@@ -72,7 +72,7 @@ from ..providers.errors import ProviderError
 from ..providers.videodb_adapter import VideoDBAdapter
 from ..showcase_playback import (
     PreparedPlaybackError,
-    assert_showcase_release_ready,
+    assert_showcase_registry_configured,
     clip_window,
     evidence_spec,
     find_prepared_entry,
@@ -267,15 +267,15 @@ def _is_measured_evidence(
 
 @app.on_event("startup")
 def _startup() -> None:
-    init_db()
     if os.getenv("ADPROOF_ENV") == "production":
-        with SessionLocal() as session:
-            try:
-                assert_showcase_release_ready(
-                    session, os.getenv("ADPROOF_SHOWCASE_WORKSPACE_ID")
-                )
-            except PreparedPlaybackError as exc:
-                raise RuntimeError("Saved-run release gate failed.") from exc
+        try:
+            assert_showcase_registry_configured(
+                os.getenv("ADPROOF_SHOWCASE_WORKSPACE_ID")
+            )
+        except PreparedPlaybackError as exc:
+            raise RuntimeError("Saved-run release gate failed.") from exc
+    else:
+        init_db()
 
 
 # --------------------------------------------------------------------------
@@ -788,27 +788,60 @@ def campaign_dashboard(
             .order_by(Submission.created_at.desc())
         )
     )
+    submission_ids = [item.id for item in submissions]
+    version_rows = list(session.scalars(
+        select(SubmissionVersion)
+        .where(SubmissionVersion.submission_id.in_(submission_ids))
+        .order_by(SubmissionVersion.submission_id, SubmissionVersion.version.desc())
+    )) if submission_ids else []
+    latest_versions: dict[str, SubmissionVersion] = {}
+    for version in version_rows:
+        latest_versions.setdefault(version.submission_id, version)
+    version_ids = [version.id for version in latest_versions.values()]
+
+    result_rows = list(session.scalars(
+        select(EvaluationResult).where(
+            EvaluationResult.submission_version_id.in_(version_ids)
+        )
+    )) if version_ids else []
+    results_by_key = {
+        (item.submission_version_id, item.rule_id): item for item in result_rows
+    }
+    review_rows = list(session.scalars(
+        select(RuleReview)
+        .where(RuleReview.submission_version_id.in_(version_ids))
+        .order_by(RuleReview.created_at.desc())
+    )) if version_ids else []
+    reviews_by_key: dict[tuple[str, str], RuleReview] = {}
+    for item in review_rows:
+        reviews_by_key.setdefault((item.submission_version_id, item.rule_id), item)
+    decision_rows = list(session.scalars(
+        select(SubmissionDecision)
+        .where(SubmissionDecision.submission_version_id.in_(version_ids))
+        .order_by(SubmissionDecision.created_at.desc())
+    )) if version_ids else []
+    decisions_by_version: dict[str, SubmissionDecision] = {}
+    for item in decision_rows:
+        decisions_by_version.setdefault(item.submission_version_id, item)
+    attribution_rows = list(session.scalars(
+        select(ShowcaseSourceAttribution).where(
+            ShowcaseSourceAttribution.submission_id.in_(submission_ids)
+        )
+    )) if submission_ids else []
+    attributions_by_submission = {
+        item.submission_id: item for item in attribution_rows
+    }
+
     rows = []
     for submission in submissions:
-        version = _latest_version(session, submission)
+        version = latest_versions.get(submission.id)
+        if version is None:
+            continue
         cells = []
         unresolved = 0
         for rule in rules:
-            result = session.scalar(
-                select(EvaluationResult).where(
-                    EvaluationResult.submission_version_id == version.id,
-                    EvaluationResult.rule_id == rule.id,
-                )
-            )
-            review = session.scalar(
-                select(RuleReview)
-                .where(
-                    RuleReview.submission_version_id == version.id,
-                    RuleReview.rule_id == rule.id,
-                )
-                .order_by(RuleReview.created_at.desc())
-                .limit(1)
-            )
+            result = results_by_key.get((version.id, rule.id))
+            review = reviews_by_key.get((version.id, rule.id))
             machine_state = result.state if result else RuleResultState.processing
             effective_state = review.human_state if review else machine_state
             if effective_state in (
@@ -819,7 +852,7 @@ def campaign_dashboard(
                 RuleResultState.not_evaluated,
             ):
                 unresolved += 1
-            evidence_ids = result.evidence_ids or [] if result else []
+            evidence_ids = (result.evidence_ids or []) if result else []
             cells.append(
                 {
                     "rule_id": rule.id,
@@ -830,17 +863,8 @@ def campaign_dashboard(
                     "evidence_id": evidence_ids[0] if evidence_ids else None,
                 }
             )
-        decision = session.scalar(
-            select(SubmissionDecision)
-            .where(SubmissionDecision.submission_version_id == version.id)
-            .order_by(SubmissionDecision.created_at.desc())
-            .limit(1)
-        )
-        attribution = session.scalar(
-            select(ShowcaseSourceAttribution).where(
-                ShowcaseSourceAttribution.submission_id == submission.id
-            )
-        )
+        decision = decisions_by_version.get(version.id)
+        attribution = attributions_by_submission.get(submission.id)
         rows.append(
             {
                 "submission_id": submission.id,

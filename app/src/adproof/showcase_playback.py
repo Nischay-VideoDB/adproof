@@ -492,6 +492,25 @@ def assert_showcase_release_ready(session: Session, workspace_id: str | None) ->
         )
 
 
+def assert_showcase_registry_configured(workspace_id: str | None) -> None:
+    """Cold-start gate using only deterministic server-local configuration.
+
+    Serverless instances must never run schema DDL or the full database graph
+    preflight while handling viewer traffic. The deploy/operator preflight
+    remains authoritative for DB membership and HLS health; each playback
+    request still authorizes and verifies its exact asset/provider binding.
+    """
+    if not workspace_id or workspace_id != PINNED_SHOWCASE_WORKSPACE_ID:
+        raise PreparedPlaybackError(
+            "The saved-run workspace is missing or does not match this release."
+        )
+    entries = prepared_registry()
+    if len(entries) != PINNED_SHOWCASE_ENTRY_COUNT:
+        raise PreparedPlaybackError(
+            "The saved playback registry does not match this release."
+        )
+
+
 def health_check_showcase_playback(
     session: Session,
     workspace_id: str,

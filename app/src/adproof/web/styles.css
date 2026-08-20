@@ -622,10 +622,18 @@ p, dd, li, button, .state-chip, .result-chip, .matrix-status { overflow-wrap: an
 .skeleton-line.short { width: min(360px,55%); }
 @keyframes skeleton { to { background-position: -200% 0; } }
 
-.campaign-browser { display: block; }
-.campaign-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
-.campaign-toolbar label { font-weight: 650; }
-.campaign-toolbar select { min-width: min(100%, 360px); background: #fff; }
+.campaign-browser { display: grid; grid-template-columns: minmax(260px,340px) minmax(0,1fr); gap: 16px; align-items: start; }
+.selection-panel { min-width: 0; }
+.selection-panel-wide { flex: 1 1 680px; }
+.selection-label { display: block; margin-bottom: 7px; color: var(--muted); font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.selection-list { display: grid; gap: 7px; max-height: 280px; overflow-y: auto; overscroll-behavior: contain; padding: 7px; border: 1px solid var(--border); border-radius: 13px; background: #f7f9f6; }
+.selection-list-runs { grid-template-columns: repeat(auto-fit,minmax(250px,1fr)); max-height: 220px; }
+.selection-list-requirements { grid-template-columns: repeat(2,minmax(0,1fr)); max-height: 300px; }
+.selection-row { width: 100%; min-height: 64px; padding: 10px 12px; display: grid; gap: 3px; align-content: center; text-align: left; border: 1px solid transparent; border-radius: 10px; background: #fff; color: var(--text); cursor: pointer; }
+.selection-row:hover, .selection-row.active { border-color: #72a38d; background: #eaf3ed; }
+.selection-row:focus-visible { outline: 3px solid rgba(23,107,79,.34); outline-offset: 2px; }
+.selection-row strong { line-height: 1.35; }
+.selection-row span, .selection-row small { color: var(--muted); line-height: 1.35; }
 .campaign-dashboard { width: 100%; }
 .campaign-summary-stats { grid-template-columns: repeat(5, minmax(100px,1fr)); }
 .campaign-requirements { border-top: 1px solid var(--border); padding-top: 18px; margin-top: 20px; }
@@ -651,6 +659,8 @@ p, dd, li, button, .state-chip, .result-chip, .matrix-status { overflow-wrap: an
   .matrix-cards button { width: 100%; min-height: 48px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 0; border-top: 1px solid var(--border); background: transparent; color: var(--text); cursor: pointer; }
   .source-license dl { grid-template-columns: 1fr; }
   .source-license dt { font-weight: 650; }
+  .campaign-browser { grid-template-columns: 1fr; }
+  .selection-list-requirements, .selection-list-runs { grid-template-columns: 1fr; max-height: 260px; }
 }
 
 @media (max-width: 900px) {

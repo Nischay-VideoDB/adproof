@@ -639,6 +639,56 @@ def test_saved_run_uses_one_prepared_window_with_distinct_canonical_markers(
     assert calls == []
 
 
+def test_campaign_dashboard_projects_submission_matrix(env):
+    client, ids = env
+    owner = login(client, "a@example.com", PASSWORD_A)
+    campaign = owner.post(
+        "/api/campaigns", json={**CAMPAIGN, "workspace_id": ids["ws_a"]}
+    )
+    assert campaign.status_code == 201
+    campaign_id = campaign.json()["campaign_id"]
+    # Insert only the domain row needed by the read projection. Going through
+    # submission intake would deliberately start the real provider workflow,
+    # which is outside this compact dashboard-query regression.
+    import adproof.db as db
+    from adproof.models import RuleSetVersion, Submission, SubmissionVersion
+    from adproof.states import SubmissionState
+    from sqlalchemy import select as sa_select
+
+    with db.session_scope() as session:
+        rule_set_id = session.scalar(
+            sa_select(RuleSetVersion.id).where(
+                RuleSetVersion.campaign_id == campaign_id
+            )
+        )
+        item = Submission(
+            workspace_id=ids["ws_a"],
+            campaign_id=campaign_id,
+            creator_reference="dashboard-creator",
+            idempotency_key="dashboard-projection",
+            state=SubmissionState.draft,
+        )
+        session.add(item)
+        session.flush()
+        session.add(
+            SubmissionVersion(
+                submission_id=item.id,
+                version=1,
+                rule_set_version_id=rule_set_id,
+                source_type="url",
+                source_url="https://example.invalid/dashboard.mp4",
+                submitted_by="a@example.com",
+            )
+        )
+    response = owner.get(f"/api/campaigns/{campaign_id}/dashboard")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["summary"]["submission_count"] == 1
+    assert len(body["requirements"]) == 1
+    assert body["submissions"][0]["creator_reference"] == "dashboard-creator"
+    assert len(body["submissions"][0]["cells"]) == 1
+
+
 def test_media_proxy_rejects_a_forged_upstream_url(env):
     """Without the signature + host allowlist this would be an SSRF relay."""
     client, ids = env

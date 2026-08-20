@@ -1,4 +1,7 @@
 import json
+import os
+import subprocess
+import sys
 
 import pytest
 
@@ -153,6 +156,49 @@ def test_release_gate_requires_pinned_workspace_and_exact_live_contract(monkeypa
     prepared.assert_showcase_release_ready(
         object(), prepared.PINNED_SHOWCASE_WORKSPACE_ID
     )
+
+
+def test_cold_start_gate_is_local_registry_only(monkeypatch):
+    from adproof import showcase_playback as prepared
+
+    monkeypatch.setattr(prepared, "prepared_registry", lambda: {str(i): object() for i in range(23)})
+    prepared.assert_showcase_registry_configured(prepared.PINNED_SHOWCASE_WORKSPACE_ID)
+    with pytest.raises(prepared.PreparedPlaybackError):
+        prepared.assert_showcase_registry_configured("wrong-workspace")
+
+
+def test_production_startup_never_runs_schema_bootstrap(monkeypatch):
+    import adproof.api.main as main
+
+    monkeypatch.setenv("ADPROOF_ENV", "production")
+    monkeypatch.setenv("ADPROOF_SHOWCASE_WORKSPACE_ID", "workspace")
+    calls = []
+    monkeypatch.setattr(main, "init_db", lambda: calls.append("ddl"))
+    monkeypatch.setattr(
+        main, "assert_showcase_registry_configured", lambda workspace: calls.append(workspace)
+    )
+    main._startup()
+    assert calls == ["workspace"]
+
+
+def test_production_engine_does_not_retain_serverless_connections():
+    env = {
+        **os.environ,
+        "ADPROOF_ENV": "production",
+        "ADPROOF_DATABASE_URL": "sqlite+pysqlite:///:memory:",
+    }
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from adproof.db import engine; print(type(engine.pool).__name__)",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.stdout.strip() == "NullPool"
 
 
 def test_pinned_saved_workspace_cannot_fall_through_when_env_is_missing(monkeypatch):

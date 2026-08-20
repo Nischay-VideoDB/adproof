@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/styles.css?v=21" />
+  <link rel="stylesheet" href="/static/styles.css?v=22" />
 </head>
 <body>
 
@@ -62,7 +62,7 @@
       <button id="new-campaign" class="btn btn-primary">New campaign</button>
     </section>
     <section class="campaign-browser">
-      <div class="campaign-toolbar"><label for="campaign-picker">Campaign</label><select id="campaign-picker" class="inline-select"></select></div>
+      <div class="selection-panel"><span class="selection-label">Campaigns</span><div id="campaign-picker" class="selection-list" role="listbox" aria-label="Campaigns"></div></div>
       <p id="campaigns-empty" class="empty" hidden>No campaigns yet. Create one and confirm its requirements before adding submissions.</p>
       <div id="campaign-dashboard" class="campaign-dashboard" aria-live="polite">
         <p class="empty placeholder">Select a campaign to see its brief, confirmed requirements, and creator review matrix.</p>
@@ -74,7 +74,7 @@
   <main id="view-review" class="view view-single">
     <section class="panel saved-runs-panel" id="report-panel">
       <div class="run-toolbar">
-        <label for="submission-picker"><span>Saved verification run</span><select id="submission-picker" class="inline-select"></select></label>
+        <div class="selection-panel selection-panel-wide"><span class="selection-label">Saved verification runs</span><div id="submission-picker" class="selection-list selection-list-runs" role="listbox" aria-label="Saved verification runs"></div></div>
         <button id="new-submission" class="btn btn-primary">New submission</button>
       </div>
       <p id="submissions-empty" class="empty" hidden>
@@ -100,7 +100,7 @@
 
         <section id="evidence-workspace" class="evidence-workspace" aria-live="polite">
           <div class="evidence-toolbar">
-            <label for="requirement-picker"><span>Requirement</span><select id="requirement-picker" class="inline-select"></select></label>
+            <div class="selection-panel selection-panel-wide"><span class="selection-label">Requirements</span><div id="requirement-picker" class="selection-list selection-list-requirements" role="listbox" aria-label="Requirements"></div></div>
             <button id="full-source-btn" class="btn" type="button">View full source</button>
           </div>
           <div id="requirement-content">
@@ -253,6 +253,6 @@
 </dialog>
 
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
-  <script src="/static/app.js?v=21"></script>
+  <script src="/static/app.js?v=22"></script>
 </body>
 </html>

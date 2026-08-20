@@ -218,7 +218,16 @@ async function loadSubmissions() {
     if (error.name === "AbortError") return;
     throw error;
   }
-  const subs = await response.json();
+  if (epoch !== submissionListEpoch) return;
+  if (!response.ok) {
+    clearReportView("Saved runs could not be loaded. Try again.");
+    return;
+  }
+  const subs = await response.json().catch(() => null);
+  if (!Array.isArray(subs)) {
+    clearReportView("Saved runs could not be loaded. Try again.");
+    return;
+  }
   if (epoch !== submissionListEpoch) return;
   const selectedStillExists = subs.some((s) => s.id === currentSubmissionId);
   let shouldOpenFirst = false;
@@ -231,9 +240,12 @@ async function loadSubmissions() {
   const picker = $("submission-picker");
   picker.innerHTML = subs
     .map(
-      (s) => `<option value="${esc(s.id)}" ${s.id === currentSubmissionId ? "selected" : ""}>${esc(s.creator_reference)} — ${esc(s.campaign_name ?? "Campaign")} — ${esc(labelState(s.state))}</option>`
+      (s) => `<button type="button" role="option" aria-selected="${s.id === currentSubmissionId}" class="selection-row ${s.id === currentSubmissionId ? "active" : ""}" data-submission-choice="${esc(s.id)}"><strong>${esc(s.creator_reference)}</strong><span>${esc(s.campaign_name ?? "Campaign")}</span><small>${esc(labelState(s.state))}</small></button>`
     )
     .join("");
+  picker.querySelectorAll("[data-submission-choice]").forEach((button) =>
+    button.addEventListener("click", () => selectSubmission(button.dataset.submissionChoice))
+  );
   if (shouldOpenFirst) loadReport();
 }
 
@@ -242,11 +254,13 @@ function selectSubmission(id, ruleId = null) {
   currentSubmissionId = id;
   selectedRuleId = ruleId;
   switchView("review");
-  $("submission-picker").value = id;
+  $("submission-picker").querySelectorAll("[data-submission-choice]").forEach((button) => {
+    const active = button.dataset.submissionChoice === id;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", String(active));
+  });
   loadReport();
 }
-
-$("submission-picker").addEventListener("change", (event) => selectSubmission(event.target.value));
 
 function renderEvidence(ev) {
   const label = ev.evidence_kind === "issue"
@@ -368,7 +382,7 @@ function renderRules(rules, permissions) {
   }
   $("requirement-picker").innerHTML = rules.map((rule) => {
     const state = effectiveState(rule);
-    return `<option value="${esc(rule.id)}" ${rule.id === selectedRuleId ? "selected" : ""}>R${rule.ordinal + 1} · ${esc(rule.requirement_text)} · ${esc(labelState(state))}</option>`;
+    return `<button type="button" role="option" aria-selected="${rule.id === selectedRuleId}" class="selection-row requirement-choice ${rule.id === selectedRuleId ? "active" : ""}" data-rule-choice="${esc(rule.id)}"><strong>R${rule.ordinal + 1} · ${esc(rule.requirement_text)}</strong><small>${esc(effectiveStateLabel(rule))}</small></button>`;
   }).join("");
 
   const rule = rules.find((item) => item.id === selectedRuleId);
@@ -422,6 +436,16 @@ function renderRules(rules, permissions) {
   document.querySelectorAll("[data-override]").forEach((btn) =>
     btn.addEventListener("click", () => openOverride(btn.dataset.override))
   );
+  $("requirement-picker").querySelectorAll("[data-rule-choice]").forEach((button) =>
+    button.addEventListener("click", () => {
+      stopPlayback({ invalidateReport: false });
+      selectedRuleId = button.dataset.ruleChoice;
+      renderRules(currentReport.rules, currentReport.permissions);
+    })
+  );
+  const initialEvidence = proof[0] || issues[0] || context[0];
+  if (initialEvidence) void loadEvidencePlayback(initialEvidence.id, false);
+  else void loadFullSourcePaused();
 }
 
 async function submitReview(ruleId, action, body = {}) {
@@ -512,7 +536,7 @@ async function fetchPlayback(evidenceId, epoch, submissionId, ruleId) {
   return res.json();
 }
 
-async function playAt(evidenceId) {
+async function loadEvidencePlayback(evidenceId, autoplay = false) {
   const submissionId = currentSubmissionId;
   const ruleId = selectedRuleId;
   const epoch = stopPlayback({ clearDetail: false, invalidateReport: false });
@@ -529,10 +553,16 @@ async function playAt(evidenceId) {
   const start = () => {
     if (!stillCurrent()) return;
     player.currentTime = fullSourceContext ? data.detected_start_seconds : 0;
-    player.play().catch(() => {});
+    if (autoplay) player.play().catch(() => {});
+    else player.pause();
   };
-  loadStream(data.playback_url, start);
-  if (player.dataset.src === data.playback_url && player.readyState >= 1) start();
+  loadStream(data.playback_url, autoplay ? start : undefined);
+  if (autoplay && player.dataset.src === data.playback_url && player.readyState >= 1) start();
+  if (!autoplay) {
+    player.pause();
+    if (player.readyState >= 1) start();
+    else addPlayerListener("loadedmetadata", start);
+  }
   const marker = $("detection-marker");
   const renderMarker = (duration) => {
     if (!stillCurrent()) return;
@@ -561,6 +591,35 @@ async function playAt(evidenceId) {
   $("player-note").textContent = fullSourceContext
     ? `Detected ${fmtTime(data.detected_start_seconds)}–${fmtTime(data.detected_end_seconds)} · showing full source context because duration was unavailable.`
     : `Detected ${fmtTime(data.detected_start_seconds)}–${fmtTime(data.detected_end_seconds)}${data.showing_surrounding_context ? " · showing surrounding context" : ""}.`;
+}
+
+const playAt = (evidenceId) => loadEvidencePlayback(evidenceId, true);
+
+async function loadFullSourcePaused() {
+  if (!currentSubmissionId) return;
+  const submissionId = currentSubmissionId;
+  const ruleId = selectedRuleId;
+  const epoch = stopPlayback({ clearDetail: false, invalidateReport: false });
+  playbackController = new AbortController();
+  let response;
+  try {
+    response = await api(`/api/submissions/${submissionId}/playback`, { signal: playbackController.signal });
+  } catch (error) {
+    if (error.name === "AbortError") return;
+    if (epoch === mediaEpoch) $("player-note").textContent = "Full source playback is unavailable. Try again.";
+    return;
+  }
+  if (epoch !== mediaEpoch || submissionId !== currentSubmissionId || ruleId !== selectedRuleId) return;
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    $("player-note").textContent = body.detail ?? "Full source playback is unavailable. Try again.";
+    return;
+  }
+  const data = await response.json();
+  $("detection-marker").hidden = true;
+  $("player-note").textContent = "Full-source review · loaded and paused.";
+  loadStream(data.playback_url);
+  $("player").pause();
 }
 
 async function loadReport() {
@@ -651,31 +710,7 @@ async function loadReport() {
   }
 }
 
-$("full-source-btn").addEventListener("click", async () => {
-  if (!currentSubmissionId) return;
-  const submissionId = currentSubmissionId;
-  const ruleId = selectedRuleId;
-  const epoch = stopPlayback({ clearDetail: false, invalidateReport: false });
-  playbackController = new AbortController();
-  let response;
-  try {
-    response = await api(`/api/submissions/${submissionId}/playback`, { signal: playbackController.signal });
-  } catch (error) {
-    if (error.name === "AbortError") return;
-    if (epoch === mediaEpoch) $("player-note").textContent = "Full source playback is unavailable. Try again.";
-    return;
-  }
-  if (epoch !== mediaEpoch || submissionId !== currentSubmissionId || ruleId !== selectedRuleId) return;
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
-    $("player-note").textContent = body.detail ?? "Full source playback is unavailable. Try again.";
-    return;
-  }
-  const data = await response.json();
-  $("detection-marker").hidden = true;
-  $("player-note").textContent = "Full source playback · evidence markers are shown only on bounded clips.";
-  loadStream(data.playback_url);
-});
+$("full-source-btn").addEventListener("click", () => loadFullSourcePaused());
 
 $("retry-btn").addEventListener("click", async () => {
   await api(`/api/submissions/${currentSubmissionId}/retry`, { method: "POST" });
@@ -696,6 +731,10 @@ function switchView(view) {
   $("view-review").hidden = view !== "review";
   $("view-campaigns").hidden = view !== "campaigns";
   $("view-analytics").hidden = view !== "analytics";
+  if (view === "campaigns") {
+    if (campaigns.length && currentCampaignId) loadCampaignDashboard(currentCampaignId);
+    else loadCampaigns();
+  }
   if (view === "analytics") loadAnalytics();
 }
 
@@ -706,14 +745,32 @@ document.querySelectorAll(".tab").forEach((tab) =>
 /* ── campaigns ──────────────────────────────────────────────────────────── */
 
 async function loadCampaigns() {
-  campaigns = await (await api("/api/campaigns")).json();
+  const response = await api("/api/campaigns");
+  if (!response.ok) {
+    campaigns = [];
+    $("campaign-dashboard").innerHTML = `<p class="empty">Campaigns could not be loaded. Try again.</p>`;
+    return;
+  }
+  campaigns = await response.json().catch(() => []);
+  if (!Array.isArray(campaigns)) campaigns = [];
   if (!campaigns.some((campaign) => campaign.id === currentCampaignId)) {
     currentCampaignId = campaigns[0]?.id || null;
   }
   $("campaigns-empty").hidden = campaigns.length > 0;
   $("campaign-picker").innerHTML = campaigns.map((c) =>
-    `<option value="${esc(c.id)}" ${c.id === currentCampaignId ? "selected" : ""}>${esc(c.name)}</option>`
+    `<button type="button" role="option" aria-selected="${c.id === currentCampaignId}" class="selection-row ${c.id === currentCampaignId ? "active" : ""}" data-campaign-choice="${esc(c.id)}"><strong>${esc(c.name)}</strong><span>${esc(c.workspace_name || "Workspace")}</span><small>${c.rule_set_version ? `Requirements v${esc(c.rule_set_version)}` : "Requirements pending"}</small></button>`
   ).join("");
+  $("campaign-picker").querySelectorAll("[data-campaign-choice]").forEach((button) =>
+    button.addEventListener("click", () => {
+      currentCampaignId = button.dataset.campaignChoice;
+      $("campaign-picker").querySelectorAll("[data-campaign-choice]").forEach((row) => {
+        const active = row === button;
+        row.classList.toggle("active", active);
+        row.setAttribute("aria-selected", String(active));
+      });
+      loadCampaignDashboard(currentCampaignId);
+    })
+  );
   const select = document.querySelector('#submission-form select[name="campaign_id"]');
   const writableCampaigns = campaigns.filter((c) => c.can_submit);
   select.innerHTML = writableCampaigns
@@ -723,7 +780,9 @@ async function loadCampaigns() {
   // opens login in context instead of presenting a disabled dead end.
   $("new-submission").disabled = false;
   $("new-campaign").disabled = false;
-  if (currentCampaignId) await loadCampaignDashboard(currentCampaignId);
+  if (currentCampaignId && currentView === "campaigns") {
+    await loadCampaignDashboard(currentCampaignId);
+  }
 }
 
 function matrixStatus(state, reviewed = false) {
@@ -761,7 +820,14 @@ async function loadCampaignDashboard(campaignId) {
     }
     return;
   }
-  const data = await response.json();
+  const data = await response.json().catch(() => null);
+  if (!data) {
+    if (epoch === campaignEpoch) {
+      $("campaign-dashboard").innerHTML = `<p class="empty">Campaign could not be loaded. Try again.</p>`;
+      $("campaign-dashboard").setAttribute("aria-busy", "false");
+    }
+    return;
+  }
   if (requestedId !== currentCampaignId || epoch !== campaignEpoch) return;
   const requirements = data.requirements;
   const rows = data.submissions;
@@ -790,17 +856,6 @@ async function loadCampaignDashboard(campaignId) {
   $("dashboard-new-submission").addEventListener("click", openNewSubmission);
   $("campaign-dashboard").querySelectorAll("[data-submission]").forEach((button) => button.addEventListener("click", () => selectSubmission(button.dataset.submission, button.dataset.rule || null)));
 }
-
-$("campaign-picker").addEventListener("change", (event) => {
-  currentCampaignId = event.target.value;
-  loadCampaignDashboard(currentCampaignId);
-});
-
-$("requirement-picker").addEventListener("change", (event) => {
-  stopPlayback({ invalidateReport: false });
-  selectedRuleId = event.target.value;
-  renderRules(currentReport.rules, currentReport.permissions);
-});
 
 function openNewSubmission() {
   if (isDemoVisitor()) {
@@ -1298,5 +1353,5 @@ async function boot() {
 
 boot();
 setInterval(() => {
-  if (currentUser) loadSubmissions();
+  if (currentUser && !isDemoVisitor()) loadSubmissions();
 }, 10000);

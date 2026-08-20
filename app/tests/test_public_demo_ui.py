@@ -47,8 +47,8 @@ def test_same_app_url_opens_demo_and_write_ctas_escalate_to_login():
     assert 'class="review-matrix"' in js
     assert 'id="requirement-picker"' in html
     assert 'id="evidence-workspace"' in html
-    assert 'styles.css?v=21' in html
-    assert 'app.js?v=21' in html
+    assert 'styles.css?v=22' in html
+    assert 'app.js?v=22' in html
     assert "remain marked uncertain after human review" in js
     assert "requestedEpoch !== selectionEpoch" in js
     assert 'data.playback_mode === "full_source_context"' in js
@@ -64,12 +64,15 @@ def test_saved_run_information_architecture_and_copy_contract():
 
     assert html.index('data-view="review"') < html.index('data-view="campaigns"')
     assert 'class="tab active" role="tab" aria-selected="true" data-view="review"' in html
-    assert 'id="submission-picker"' in html
+    assert 'id="submission-picker" class="selection-list' in html
     assert 'id="submission-summary"' in html
-    assert 'id="requirement-picker"' in html
+    assert 'id="requirement-picker" class="selection-list' in html
     assert 'id="requirement-measurement"' in html
     assert 'class="requirement-rail"' not in html
-    assert 'id="campaign-picker"' in html
+    assert 'id="campaign-picker" class="selection-list' in html
+    assert '<select id="submission-picker"' not in html
+    assert '<select id="requirement-picker"' not in html
+    assert '<select id="campaign-picker"' not in html
     assert 'class="review-matrix"' in js
     assert 'class="matrix-cards"' in js
     assert 'aria-label="${esc(row.creator_reference)} — requirement' in js
@@ -115,7 +118,12 @@ def test_selection_is_atomic_and_never_autoplays_on_navigation():
     assert "targetEvidence" not in js
     assert 'loadStream(data.playback_url, () => $("player").play()' not in js
     assert '$("login-cancel").addEventListener("click", () => {' in js
-    assert '$("requirement-picker").addEventListener("change"' in js
+    assert 'data-rule-choice' in js
+    assert 'loadEvidencePlayback(initialEvidence.id, false)' in js
+    assert 'else void loadFullSourcePaused()' in js
+    assert 'if (autoplay) player.play()' in js
+    assert 'else player.pause()' in js
+    assert 'if (currentUser && !isDemoVisitor()) loadSubmissions()' in js
     assert "pendingMediaListeners" in js
     assert "removeEventListener(type, listener)" in js
     assert 'querySelectorAll(".btn-play.active")' in js

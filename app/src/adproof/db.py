@@ -9,14 +9,26 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+import os
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import NullPool
 
 from .config import settings
 from .models import Base
 
-engine = create_engine(settings.database_url, future=True, pool_pre_ping=True)
+_production = os.getenv("ADPROOF_ENV") == "production"
+_engine_options = (
+    {"poolclass": NullPool, "pool_pre_ping": False}
+    if _production
+    else {"pool_pre_ping": True}
+)
+engine = create_engine(
+    settings.database_url,
+    future=True,
+    **_engine_options,
+)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 # PostgreSQL advisory-lock keys are application-defined signed 32-bit values.
