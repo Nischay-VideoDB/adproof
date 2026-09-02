@@ -4,6 +4,7 @@ The critical tests here are the negative ones: a missing credential and a
 provider failure must produce visible errors, never a plausible report.
 """
 
+import json
 import os
 from types import SimpleNamespace
 
@@ -15,6 +16,82 @@ TEST_DB = os.getenv("ADPROOF_TEST_DATABASE_URL", "postgresql+psycopg:///adproof_
 
 
 PASSWORD = "test-password-1234"
+
+
+def test_health_reports_read_only_production_readiness(monkeypatch):
+    import adproof.api.main as main
+
+    class Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def execute(self, statement):
+            assert str(statement) == "SELECT 1"
+
+    monkeypatch.setattr(main, "SessionLocal", Session)
+    monkeypatch.setattr(
+        main,
+        "settings",
+        SimpleNamespace(videodb_api_key="configured-without-exposing-it"),
+    )
+    monkeypatch.setattr(
+        main,
+        "preflight_showcase_playback",
+        lambda *_args, **_kwargs: {
+            "ready": True,
+            "source_count": 2,
+            "clip_count": 21,
+            "prepared_count": 23,
+        },
+    )
+
+    response = main.health()
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    payload = json.loads(response.body)
+    assert payload == {
+        "contractVersion": 1,
+        "status": "ok",
+        "app": "adproof",
+        "checks": {
+            "api": {"status": "ok"},
+            "providerConfiguration": {"status": "ok"},
+            "database": {"status": "ok"},
+            "savedShowcase": {
+                "status": "ok",
+                "sourceCount": 2,
+                "clipCount": 21,
+                "preparedCount": 23,
+            },
+        },
+    }
+
+
+def test_health_returns_503_without_disclosing_dependency_errors(monkeypatch):
+    import adproof.api.main as main
+
+    class UnavailableSession:
+        def __enter__(self):
+            raise RuntimeError("secret database hostname")
+
+        def __exit__(self, *_args):
+            return None
+
+    monkeypatch.setattr(main, "SessionLocal", UnavailableSession)
+    monkeypatch.setattr(main, "settings", SimpleNamespace(videodb_api_key=None))
+
+    response = main.health()
+
+    assert response.status_code == 503
+    assert b"secret database hostname" not in response.body
+    payload = json.loads(response.body)
+    assert payload["status"] == "error"
+    assert payload["checks"]["database"] == {"status": "error"}
+    assert payload["checks"]["providerConfiguration"] == {"status": "error"}
 
 
 def test_clip_window_boundaries_preserve_the_canonical_interval():

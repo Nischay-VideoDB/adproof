@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import func, select, text
@@ -71,6 +71,8 @@ from ..orchestrator.steps import dedupe_key
 from ..providers.errors import ProviderError
 from ..providers.videodb_adapter import VideoDBAdapter
 from ..showcase_playback import (
+    PINNED_SHOWCASE_ENTRY_COUNT,
+    PINNED_SHOWCASE_MANIFEST_HASH,
     PreparedPlaybackError,
     assert_showcase_registry_configured,
     clip_window,
@@ -78,6 +80,7 @@ from ..showcase_playback import (
     find_prepared_entry,
     full_source_spec,
     is_saved_run_workspace,
+    preflight_showcase_playback,
 )
 from ..states import (
     CAN_DECIDE_FINAL,
@@ -276,6 +279,71 @@ def _startup() -> None:
             raise RuntimeError("Saved-run release gate failed.") from exc
     else:
         init_db()
+
+
+# --------------------------------------------------------------------------
+# operational health
+# --------------------------------------------------------------------------
+
+
+@app.get(
+    "/api/health",
+    responses={503: {"description": "A critical dependency is not ready."}},
+)
+def health() -> JSONResponse:
+    """Check production readiness without writes or provider-side work."""
+    checks: dict[str, dict[str, Any]] = {
+        "api": {"status": "ok"},
+        "providerConfiguration": {
+            "status": "ok" if settings.videodb_api_key else "error"
+        },
+        "database": {"status": "error"},
+        "savedShowcase": {"status": "error"},
+    }
+
+    try:
+        with SessionLocal() as session:
+            try:
+                session.execute(text("SELECT 1"))
+                checks["database"] = {"status": "ok"}
+            except Exception:  # noqa: BLE001 - the public response stays generic
+                pass
+            else:
+                try:
+                    preflight = preflight_showcase_playback(
+                        session,
+                        os.getenv("ADPROOF_SHOWCASE_WORKSPACE_ID", ""),
+                        expected_cited_references=22,
+                        expected_receipts=PINNED_SHOWCASE_ENTRY_COUNT,
+                        expected_manifest_hash=PINNED_SHOWCASE_MANIFEST_HASH,
+                    )
+                    showcase_ready = bool(
+                        preflight["ready"]
+                        and preflight["source_count"] == 2
+                        and preflight["clip_count"] == 21
+                    )
+                    checks["savedShowcase"] = {
+                        "status": "ok" if showcase_ready else "error",
+                        "sourceCount": preflight["source_count"],
+                        "clipCount": preflight["clip_count"],
+                        "preparedCount": preflight["prepared_count"],
+                    }
+                except Exception:  # noqa: BLE001 - never disclose DB/provider details
+                    pass
+    except Exception:  # noqa: BLE001 - Session construction/cleanup can also fail
+        pass
+
+    ready = all(check["status"] == "ok" for check in checks.values())
+    return JSONResponse(
+        status_code=200 if ready else 503,
+        headers={"Cache-Control": "no-store"},
+        content={
+            "contractVersion": 1,
+            "status": "ok" if ready else "error",
+            "app": "adproof",
+            "checks": checks,
+        },
+    )
 
 
 # --------------------------------------------------------------------------
