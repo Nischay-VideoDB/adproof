@@ -100,7 +100,7 @@ def run_once(
         provider_reference: str | None = None
         if job.job_type is JobType.evaluation:
             # The adapter is passed so the reading model has a provider even
-            # when no OpenRouter key is configured. Measurement stays
+            # when no OpenAI key is configured. Measurement stays
             # deterministic; the adapter is only ever asked to read text.
             if adapter is None:
                 adapter = VideoDBAdapter()

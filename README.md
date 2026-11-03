@@ -90,10 +90,12 @@ Guardrails:
 - If no model is reachable, the deterministic result stands and the report says
   no reading happened. There is no canned fallback verdict.
 
-Provider: OpenRouter free tier when `OPENROUTER_API_KEY` is set (a chain of
-free models, since free slugs get retired mid-flight — `llama-3.3-70b-instruct:free`
-started returning 404 "no longer free" during development), otherwise VideoDB's
-own `Collection.generate_text`. Whichever answered is named in the result.
+Provider: direct OpenAI Chat Completions when `OPENAI_API_KEY` is set,
+otherwise VideoDB's own `Collection.generate_text`. The default model is
+`gpt-4.1-mini`; `ADPROOF_VERDICT_MODEL` overrides `OPENAI_MODEL` for verdicts,
+phrase checking and evidence qualification. Whichever answered is named in the
+result. OpenAI requests are billed to the configured OpenAI project; the former
+OpenRouter free-model chain is no longer used.
 
 ## VideoDB primitives used
 

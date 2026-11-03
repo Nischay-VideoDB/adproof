@@ -142,7 +142,7 @@ def test_no_provider_at_all_raises_rather_than_returning_a_verdict():
                           supporting=[], conflicting=[])
 
 
-def test_videodb_is_used_when_openrouter_is_unconfigured():
+def test_videodb_is_used_when_openai_is_unconfigured():
     adapter = FakeAdapter(json.dumps({"verdict": "pass", "reasoning": "y"}))
     with patch.dict(os.environ, {}, clear=True):
         assert V.is_configured(adapter)
@@ -153,52 +153,30 @@ def test_videodb_is_used_when_openrouter_is_unconfigured():
     assert adapter.prompts, "the adapter was never actually called"
 
 
-def test_a_retired_free_model_falls_through_to_the_next_one():
-    """Free models get retired mid-flight; the chain must survive it."""
+def test_provider_failure_raises_without_trying_unrelated_free_models():
     import urllib.error
 
-    calls = []
-
-    def fail_first(request, timeout=None):
-        calls.append(json.loads(request.data)["model"])
-        if len(calls) == 1:
-            raise urllib.error.HTTPError(
-                V._ENDPOINT, 404, "gone", {}, io.BytesIO(b"not free"))
-        return FakeHTTPResponse(json.dumps({"choices": [{"message": {"content":
-            json.dumps({"verdict": "pass", "reasoning": "y"})}}]}).encode())
-
-    with patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-test"}, clear=True):
-        with patch("urllib.request.urlopen", side_effect=fail_first):
-            got = V.get_verdict(requirement="r", measurement="m",
-                                supporting=[line(1, "x")], conflicting=[])
-    assert got.state == "pass"
-    assert calls == list(V.FREE_MODELS[:2])
-
-
-def test_every_free_model_failing_raises_rather_than_defaulting():
-    import urllib.error
-
-    with patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-test"}, clear=True):
+    with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}, clear=True):
         with patch("urllib.request.urlopen", side_effect=urllib.error.HTTPError(
-                V._ENDPOINT, 429, "slow down", {}, io.BytesIO(b"rate limited"))):
-            with pytest.raises(V.VerdictUnavailable, match="All free verdict"):
-                V.get_verdict(requirement="r", measurement="m",
-                              supporting=[line(1, "x")], conflicting=[])
+                V._ENDPOINT, 429, "slow down", {}, io.BytesIO(b"rate limited"))) as request:
+            with pytest.raises(V.VerdictUnavailable, match="429"):
+                V.get_verdict(requirement="r", measurement="m", supporting=[], conflicting=[])
+    assert request.call_count == 1
 
 
-def test_openrouter_is_preferred_when_a_key_exists():
+def test_openai_is_preferred_when_a_key_exists():
     body = json.dumps({"choices": [{"message": {"content": json.dumps(
         {"verdict": "fail", "reasoning": "no"})}}]}).encode()
 
     adapter = FakeAdapter("unused")
-    with patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-test"}, clear=True):
+    with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}, clear=True):
         with patch("urllib.request.urlopen", return_value=FakeHTTPResponse(body)):
             got = V.get_verdict(requirement="r", measurement="m",
                                 supporting=[line(1, "x")], conflicting=[],
-                                adapter=adapter, model="free/model")
+                                adapter=adapter, model="gpt-4.1-mini")
     assert got.state == "fail"
-    assert got.model == "free/model"
-    assert not adapter.prompts, "VideoDB was called despite an OpenRouter key"
+    assert got.model == "gpt-4.1-mini"
+    assert not adapter.prompts, "VideoDB was called despite an OpenAI key"
 
 
 def test_provider_failure_surfaces_instead_of_being_swallowed():
@@ -541,3 +519,37 @@ def test_a_whole_batch_of_unsure_is_reachable_only_by_the_model_saying_so():
     # ...whereas a truncated response is also all-unsure, which is why the
     # decode above must succeed for well-formed input.
     assert parse_verdicts('[{"n":1,"verdict":"supp', 2) == ["unsure", "unsure"]
+
+
+def test_all_reading_paths_share_direct_openai_transport_and_model_override():
+    from adproof.retrieval import qualify
+    calls = []
+    body = json.dumps({"choices": [{"message": {"content": json.dumps({
+        "verdict": "pass", "reasoning": "evidence supports it", "likely_spoken": False,
+    })}}]}).encode()
+
+    def complete(request, timeout=None):
+        calls.append(request)
+        return FakeHTTPResponse(body)
+
+    with patch.dict(os.environ, {
+        "OPENAI_API_KEY": "openai-test-key", "OPENAI_MODEL": "gpt-4.1-mini",
+        "ADPROOF_VERDICT_MODEL": "gpt-4.1-mini-2025-04-14", "OPENROUTER_API_KEY": "obsolete-router-key",
+    }, clear=True):
+        with patch("urllib.request.urlopen", side_effect=complete):
+            assert V.get_verdict(requirement="r", measurement="m", supporting=[], conflicting=[]).state == "pass"
+            assert V.check_phrase_in_transcript("phrase", "transcript").likely_spoken is False
+            qualify._complete(FakeAdapter("unused"), "Return JSON", None)
+    assert len(calls) == 3
+    for request in calls:
+        assert request.full_url == "https://api.openai.com/v1/chat/completions"
+        assert request.get_header("Authorization") == "Bearer openai-test-key"
+        payload = json.loads(request.data)
+        assert payload["model"] == "gpt-4.1-mini-2025-04-14"
+        assert payload["response_format"] == {"type": "json_object"}
+        assert payload["store"] is False
+
+
+def test_obsolete_router_credential_does_not_enable_direct_openai():
+    with patch.dict(os.environ, {"OPENROUTER_API_KEY": "obsolete-router-key"}, clear=True):
+        assert not V.is_configured()

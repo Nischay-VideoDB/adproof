@@ -73,7 +73,7 @@ def parse_verdicts(raw, count: int) -> list[str]:
     verdicts = [UNSURE] * count
 
     # Providers differ: VideoDB's generate_text returns a decoded object, while
-    # OpenRouter returns the completion as text. Failing to decode the string
+    # OpenAI returns the completion as text. Failing to decode the string
     # form silently degraded every verdict to "unsure" -- on real media the
     # model answered correctly for all 22 scenes and the parser discarded all
     # 22, which then read as "the model was unsure" in the report.
@@ -119,7 +119,7 @@ _BATCH_SIZE = 6
 def qualify_texts(adapter, concept: str, texts: list[str], *, collection_id=None) -> list[str]:
     """One verdict per description, in batches.
 
-    Prefers OpenRouter when configured -- it returns clean JSON reliably --
+    Prefers OpenAI when configured -- it returns clean JSON reliably --
     and falls back to VideoDB's generate_text otherwise. Raises ProviderError
     on failure; the caller must surface it rather than swallow it.
     """
@@ -138,12 +138,9 @@ def qualify_texts(adapter, concept: str, texts: list[str], *, collection_id=None
 def _complete(adapter, prompt: str, collection_id):
     from . import verdict as verdict_layer
 
-    if verdict_layer.os.getenv("OPENROUTER_API_KEY"):
-        last = None
-        for model in verdict_layer.FREE_MODELS:
-            try:
-                return verdict_layer._openrouter_content(prompt, model)
-            except verdict_layer.VerdictUnavailable as exc:
-                last = exc
-        logger.warning("all free qualifier models failed (%s); using VideoDB", last)
+    if verdict_layer.os.getenv("OPENAI_API_KEY"):
+        try:
+            return verdict_layer._openai_content(prompt, verdict_layer.configured_model())
+        except verdict_layer.VerdictUnavailable as exc:
+            logger.warning("OpenAI qualifier failed (%s); using VideoDB", exc)
     return adapter.generate_text_json(prompt, collection_id=collection_id)

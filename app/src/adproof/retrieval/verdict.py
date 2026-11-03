@@ -32,21 +32,17 @@ from dataclasses import dataclass
 
 VERDICT_PROMPT_VERSION = "rule-verdict/v1"
 
-#: Free OpenRouter models, tried in order. Free tiers rate-limit and are
-#: retired without notice -- llama-3.3-70b-instruct:free returned 404 "no
-#: longer free" during development -- so a single hardcoded model would make
-#: evaluation intermittently fail. Verified live against the OpenRouter model
-#: list and a real completion on 27 Jul 2026.
-FREE_MODELS = (
-    "nvidia/nemotron-3-super-120b-a12b:free",
-    "nvidia/nemotron-3-ultra-550b-a55b:free",
-    "openai/gpt-oss-20b:free",
-)
-#: Override the whole chain with a single model via ADPROOF_VERDICT_MODEL.
-DEFAULT_MODEL = os.getenv("ADPROOF_VERDICT_MODEL") or FREE_MODELS[0]
-_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
+# Direct OpenAI model; all evidence-reading paths honor the same override.
+DEFAULT_MODEL = "gpt-4.1-mini"
+_ENDPOINT = "https://api.openai.com/v1/chat/completions"
+
+
+def configured_model() -> str:
+    return os.getenv("ADPROOF_VERDICT_MODEL") or os.getenv("OPENAI_MODEL") or DEFAULT_MODEL
+
+
 _TIMEOUT_SECONDS = 60
-#: Descriptions are truncated so one rule's evidence fits a free-tier context.
+#: Descriptions are bounded to keep each rule's evidence request compact.
 _MAX_CHARS = 600
 _MAX_ITEMS = 12
 
@@ -77,7 +73,7 @@ class Verdict:
 
 def is_configured(adapter=None) -> bool:
     """A verdict is possible if either provider is reachable."""
-    return bool(os.getenv("OPENROUTER_API_KEY")) or adapter is not None
+    return bool(os.getenv("OPENAI_API_KEY")) or adapter is not None
 
 
 def _format(lines: list[EvidenceLine]) -> str:
@@ -151,8 +147,8 @@ def get_verdict(
     """Ask a reading model for a verdict.
 
     Two providers, in order of preference:
-      1. OpenRouter, when OPENROUTER_API_KEY is set -- a dedicated reasoning
-         model on the free tier;
+      1. OpenAI, when OPENAI_API_KEY is set -- a dedicated evidence-reading
+         model;
       2. VideoDB's own `Collection.generate_text`, which the workspace is
          already authenticated for.
 
@@ -164,26 +160,14 @@ def get_verdict(
         requirement=requirement, measurement=measurement,
         supporting=supporting, conflicting=conflicting,
     )
-    if not os.getenv("OPENROUTER_API_KEY"):
+    if not os.getenv("OPENAI_API_KEY"):
         if adapter is None:
             raise VerdictUnavailable(
-                "No verdict provider available: OPENROUTER_API_KEY is unset and "
+                "No verdict provider available: OPENAI_API_KEY is unset and "
                 "no VideoDB adapter was supplied."
             )
         return _verdict_via_videodb(adapter, prompt)
-    chain = (model,) if model else (
-        (DEFAULT_MODEL,) if os.getenv("ADPROOF_VERDICT_MODEL") else FREE_MODELS
-    )
-    last: Exception | None = None
-    for candidate in chain:
-        try:
-            return _verdict_via_openrouter(prompt, candidate)
-        except VerdictUnavailable as exc:
-            # A model that is rate-limited, retired, or off the free tier is a
-            # reason to try the next one -- not a reason to guess a verdict.
-            last = exc
-            continue
-    raise VerdictUnavailable(f"All free verdict models failed. Last: {last}")
+    return _verdict_via_openai(prompt, model or configured_model())
 
 
 def _verdict_via_videodb(adapter, prompt: str) -> Verdict:
@@ -197,17 +181,19 @@ def _verdict_via_videodb(adapter, prompt: str) -> Verdict:
                    "videodb:generate_text:pro")
 
 
-def _verdict_via_openrouter(prompt: str, model: str) -> Verdict:
-    return _finish(_openrouter_content(prompt, model), model)
+def _verdict_via_openai(prompt: str, model: str) -> Verdict:
+    return _finish(_openai_content(prompt, model), model)
 
 
-def _openrouter_content(prompt: str, model: str) -> str:
+def _openai_content(prompt: str, model: str) -> str:
     """The raw completion text. Shared by the verdict and phrase-check paths."""
-    key = os.getenv("OPENROUTER_API_KEY")
+    key = os.getenv("OPENAI_API_KEY")
     payload = json.dumps({
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0,
+        "response_format": {"type": "json_object"},
+        "store": False,
     }).encode()
 
     request = urllib.request.Request(
@@ -215,8 +201,6 @@ def _openrouter_content(prompt: str, model: str) -> str:
         headers={
             "Authorization": f"Bearer {key}",
             "Content-Type": "application/json",
-            "HTTP-Referer": "https://github.com/ayushsrivastava55/adproof",
-            "X-Title": "AdProof",
         },
     )
     try:
@@ -311,7 +295,7 @@ def check_phrase_in_transcript(
     "the transcript probably mangled it" is not the same as "they said it".
     """
     prompt = build_phrase_prompt(phrase, transcript)
-    if not os.getenv("OPENROUTER_API_KEY"):
+    if not os.getenv("OPENAI_API_KEY"):
         if adapter is None:
             raise VerdictUnavailable("No provider available for phrase checking.")
         from ..providers.errors import ProviderError
@@ -323,18 +307,8 @@ def check_phrase_in_transcript(
         content = raw if isinstance(raw, str) else json.dumps(raw)
         used = "videodb:generate_text:pro"
     else:
-        chain = (model,) if model else FREE_MODELS
-        last: Exception | None = None
-        content = used = None
-        for candidate in chain:
-            try:
-                content = _openrouter_content(prompt, candidate)
-                used = candidate
-                break
-            except VerdictUnavailable as exc:
-                last = exc
-        if content is None:
-            raise VerdictUnavailable(f"All free models failed. Last: {last}")
+        used = model or configured_model()
+        content = _openai_content(prompt, used)
 
     try:
         parsed = _extract_json(content)
